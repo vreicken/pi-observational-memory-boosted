@@ -168,12 +168,12 @@ export class StatusController {
 	private renderFooter(): string {
 		const theme = this.ui?.theme;
 		if (!theme) return "om";
-		const base = `${theme.fg("muted", "om")}`;
+		const base = `${theme.fg("success", "om")}`;
 		const g = this.gauges;
 		if (!g) return base;
-		const next = `${theme.fg("muted", "O")}${this.gaugeBar(g.nextValue, g.nextMax)}`;
-		const pool = `${theme.fg("muted", "C")}${this.gaugeBar(g.poolValue, g.poolMax)}`;
-		const ctx = `${theme.fg("muted", "X")}${this.gaugeBar(g.ctxValue, g.ctxMax)}`;
+		const next = `${theme.fg("success", "O")}${this.gaugeBar(g.nextValue, g.nextMax)}`;
+		const pool = `${theme.fg("success", "C")}${this.gaugeBar(g.poolValue, g.poolMax)}`;
+		const ctx = `${theme.fg("success", "X")}${this.gaugeBar(g.ctxValue, g.ctxMax)}`;
 		return `${next}  ${pool}  ${ctx}`;
 	}
 
