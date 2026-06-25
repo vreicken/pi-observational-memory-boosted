@@ -44,8 +44,10 @@ export default function observationalMemory(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event: unknown, ctx: any) => {
 		runtime.ensureConfig(ctx.cwd);
 		runtime.dispatchedCoversUpToId = undefined;
-		runtime.enabled = readGateFromLedger(ctx.sessionManager.getBranch() as Entry[]);
+		const branch = ctx.sessionManager.getBranch() as Entry[];
+		runtime.enabled = readGateFromLedger(branch);
 		attachIfEnabled(ctx);
+		runtime.refreshFooterGauges(branch, ctx.getContextUsage?.()?.tokens ?? null);
 	});
 
 	pi.on("session_shutdown", () => {
@@ -66,6 +68,7 @@ export default function observationalMemory(pi: ExtensionAPI): void {
 			pi.appendEntry(OM_ENABLED, { enabled: next });
 			if (next) {
 				attachIfEnabled(ctx);
+				runtime.refreshFooterGauges(ctx.sessionManager.getBranch() as Entry[], ctx.getContextUsage?.()?.tokens ?? null);
 			} else {
 				runtime.abortAllWorkers();
 				runtime.status.detach();

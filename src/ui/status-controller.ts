@@ -11,6 +11,19 @@
 
 export type WorkerType = "observer" | "consolidator";
 
+/** Live token gauges shown in the footer, right of "○ om". */
+export interface FooterGauges {
+	/** Raw tokens accrued toward the next observer chunk. */
+	nextValue: number;
+	nextMax: number;
+	/** Active pool tokens accrued toward the consolidation threshold. */
+	poolValue: number;
+	poolMax: number;
+	/** Live context-window tokens toward the compaction threshold. */
+	ctxValue: number;
+	ctxMax: number;
+}
+
 interface Theme {
 	fg(color: string, text: string): string;
 }
@@ -48,6 +61,7 @@ export class StatusController {
 	private frame = 0;
 	private readonly workers = new Map<string, WorkerEntry>();
 	private spinnerTimer: ReturnType<typeof setInterval> | undefined;
+	private gauges: FooterGauges | undefined;
 	private readonly spinnerIntervalMs: number;
 	private readonly settleMs: number;
 
@@ -67,9 +81,16 @@ export class StatusController {
 			if (entry.settleTimer) clearTimeout(entry.settleTimer);
 		}
 		this.workers.clear();
+		this.gauges = undefined;
 		this.ui?.setWidget(WORKERS_WIDGET_KEY, undefined);
 		if (this.ui) this.ui.setStatus(FOOTER_KEY, undefined);
 		this.ui = undefined;
+	}
+
+	/** Update (or clear) the live footer gauges and re-render the footer in place. */
+	setGauges(gauges: FooterGauges | undefined): void {
+		this.gauges = gauges;
+		if (this.ui) this.ui.setStatus(FOOTER_KEY, this.renderFooter());
 	}
 
 	workerStart(type: WorkerType, runId: string): void {
@@ -130,10 +151,30 @@ export class StatusController {
 		this.spinnerTimer = undefined;
 	}
 
+	/** A compact colored fill bar, e.g. `▕████░░░░▏`. Filled cells use `over` (an alert color) past max. */
+	private gaugeBar(value: number, max: number, cells = 8): string {
+		const theme = this.ui!.theme;
+		const frac = max <= 0 ? 0 : Math.max(0, value / max);
+		const filled = Math.min(cells, Math.round(Math.min(1, frac) * cells));
+		const fillColor = frac >= 1 ? "success" : "muted";
+		return (
+			theme.fg(fillColor, "▕") +
+			theme.fg(fillColor, "█".repeat(filled)) +
+			theme.fg(fillColor, "░".repeat(cells - filled)) +
+			theme.fg(fillColor, "▏")
+		);
+	}
+
 	private renderFooter(): string {
 		const theme = this.ui?.theme;
 		if (!theme) return "om";
-		return `${theme.fg("muted", "○")} ${theme.fg("muted", "om")}`;
+		const base = `${theme.fg("muted", "om")}`;
+		const g = this.gauges;
+		if (!g) return base;
+		const next = `${theme.fg("muted", "O")}${this.gaugeBar(g.nextValue, g.nextMax)}`;
+		const pool = `${theme.fg("muted", "C")}${this.gaugeBar(g.poolValue, g.poolMax)}`;
+		const ctx = `${theme.fg("muted", "X")}${this.gaugeBar(g.ctxValue, g.ctxMax)}`;
+		return `${next}  ${pool}  ${ctx}`;
 	}
 
 	/**

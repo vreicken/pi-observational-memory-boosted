@@ -36,10 +36,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`  context: ${contextTokens != null ? contextTokens.toLocaleString() : "?"} / ${runtime.config.compactAtContextTokens.toLocaleString()} tok`,
 				runtime.lastWorkerError ? `  last error: ${runtime.lastWorkerError}` : `  last error: none`,
 				"",
-				renderTimeline(branch, runtime.config, {
-					observersInFlight: runtime.observersInFlight.size,
-					consolidatorInFlight: runtime.consolidatorInFlight,
-				}),
+				renderTimeline(branch, runtime.config),
 			];
 			ctx.ui.notify(lines.join("\n"), "info");
 		},

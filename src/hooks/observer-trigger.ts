@@ -21,6 +21,7 @@ type TriggerCtx = {
 	hasUI: boolean;
 	ui?: { notify: (message: string, level?: "info" | "warning" | "error") => void };
 	sessionManager: { getBranch: () => Entry[] };
+	getContextUsage?: () => { tokens: number | null } | undefined;
 };
 
 let runCounter = 0;
@@ -77,11 +78,14 @@ export function evaluateObserverTriggers(pi: ExtensionAPI, runtime: Runtime, ctx
 		if (slice.entries.length === 0 || !slice.coversUpToId) break;
 
 		runtime.dispatchedCoversUpToId = slice.coversUpToId;
-		runtime.trackObserverTask(dispatchObserver(pi, runtime, { cwd, hasUI, ui, sessionManager }, slice));
+		runtime.trackObserverTask(
+			dispatchObserver(pi, runtime, { cwd, hasUI, ui, sessionManager, getContextUsage: ctx.getContextUsage }, slice),
+		);
 		if (hasUI) startToastLines.push(`om: observer started (~${slice.tokens.toLocaleString()} tok)`);
 	}
 
 	if (startToastLines.length > 0) ui?.notify(startToastLines.join("\n"), "info");
+	runtime.refreshFooterGauges(sessionManager.getBranch(), ctx.getContextUsage?.()?.tokens ?? null);
 }
 
 async function dispatchObserver(
@@ -147,6 +151,7 @@ async function dispatchObserver(
 			pi.appendEntry(OM_OBSERVATIONS_RECORDED, { observations, coversUpToId });
 		}
 		runtime.status.workerDone(runId, observations.length);
+		runtime.refreshFooterGauges(ctx.sessionManager.getBranch(), ctx.getContextUsage?.()?.tokens ?? null);
 		if (ctx.hasUI && ctx.ui) {
 			// Route through the coalescer: if another observer finishes in the same
 			// tick its line joins this one in a single multi-line notify call.

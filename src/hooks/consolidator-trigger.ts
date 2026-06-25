@@ -38,6 +38,7 @@ type TriggerCtx = {
 	hasUI: boolean;
 	ui?: { notify: (message: string, level?: "info" | "warning" | "error") => void };
 	sessionManager: { getBranch: () => Entry[] };
+	getContextUsage?: () => { tokens: number | null } | undefined;
 };
 
 let runCounter = 0;
@@ -139,6 +140,7 @@ async function dispatchConsolidator(
 		atomicWrite(indexPath(ctx.cwd), renderIndexFile(listTopics(ctx.cwd)));
 
 		runtime.status.workerDone(runId, toDrop.length);
+		runtime.refreshFooterGauges(ctx.sessionManager.getBranch(), ctx.getContextUsage?.()?.tokens ?? null);
 		if (ctx.hasUI && ctx.ui) {
 			runtime.queueToast(`om: consolidator promoted ${toDrop.length} obs`, "info", ctx.ui.notify.bind(ctx.ui));
 		}

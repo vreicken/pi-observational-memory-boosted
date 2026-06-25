@@ -3,7 +3,6 @@ import {
 	entryIndexById,
 	foldLedger,
 	isObservationsRecordedEntry,
-	poolTokens,
 	rawTokensAfterIndex,
 	rawTokensSinceObservationCoverage,
 	type Entry,
@@ -19,24 +18,12 @@ const GLYPH = {
 	tip: "▶", // live branch tip
 } as const;
 
-export type TimelineState = {
-	observersInFlight: number;
-	consolidatorInFlight: boolean;
-};
-
 /** A committed observation chunk, in branch order. */
 type Chunk = { coversUpToIndex: number; timestamps: string[] };
 
 function fmtK(tokens: number): string {
 	if (tokens < 1000) return `${tokens}`;
 	return `${(tokens / 1000).toFixed(1)}k`;
-}
-
-/** A 10-cell fill bar, e.g. `▕████░░░░░░▏`. */
-function gauge(value: number, max: number, cells = 10): string {
-	const frac = max <= 0 ? 0 : Math.min(1, Math.max(0, value / max));
-	const filled = Math.round(frac * cells);
-	return `▕${"█".repeat(filled)}${"░".repeat(cells - filled)}▏`;
 }
 
 function collectChunks(branch: Entry[]): Chunk[] {
@@ -81,12 +68,13 @@ function wrap(cells: string[], width: number): string {
 /**
  * Render the full session as a horizontal strip, one cell per ~`chunkTokens` of raw history:
  * the tiered pipeline reads left→right as consolidated (`.memory`) → pool → raw, with
- * compaction cutoffs overlaid and the live tip at the end. Followed by pool/observer gauges.
+ * compaction cutoffs overlaid and the live tip at the end. The live next-observer/pool token
+ * gauges live in the footer status, not here.
  *
  * Scale is *raw history* tokens (physical session), not live-context tokens. Full history is
  * rendered and wrapped across as many rows as needed.
  */
-export function renderTimeline(branch: Entry[], config: Config, state: TimelineState, width = 60): string {
+export function renderTimeline(branch: Entry[], config: Config, width = 60): string {
 	const folded = foldLedger(branch);
 	const dropped = folded.droppedObservationTimestamps;
 	const chunks = collectChunks(branch);
@@ -116,18 +104,10 @@ export function renderTimeline(branch: Entry[], config: Config, state: TimelineS
 
 	const strip = cells.length > 0 ? `${wrap(cells, width)}${GLYPH.tip}` : "(timeline empty)";
 
-	const pool = poolTokens(folded.activeObservations);
-	const consolidatorState = state.consolidatorInFlight ? "running" : "idle";
-	const observerNote =
-		state.observersInFlight > 0 ? `  (${state.observersInFlight} observer${state.observersInFlight > 1 ? "s" : ""} in flight)` : "";
-
 	return [
 		`om timeline · 1 cell ≈ ${fmtK(config.chunkTokens)} tok · ${fmtK(rawTotal)} raw · ${compactions} compaction${compactions === 1 ? "" : "s"}`,
 		strip,
 		``,
 		`  ${GLYPH.consolidated} .memory (${consolidatedChunks})   ${GLYPH.pool} pool (${poolChunks})   ${GLYPH.raw} raw   ${GLYPH.cut} compaction cut   ${GLYPH.tip} tip`,
-		``,
-		`  pool ${gauge(pool, config.consolidateAtPoolTokens)} ${fmtK(pool)} / ${fmtK(config.consolidateAtPoolTokens)}   consolidator: ${consolidatorState}`,
-		`  next ${gauge(tailTokens, config.chunkTokens)} ${fmtK(tailTokens)} / ${fmtK(config.chunkTokens)}   next observer chunk${observerNote}`,
 	].join("\n");
 }

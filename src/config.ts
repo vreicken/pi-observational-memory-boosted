@@ -47,11 +47,11 @@ export interface Config {
 }
 
 export const DEFAULTS: Config = {
-	chunkTokens: 3_000,
+	chunkTokens: 10_000,
 	chunkOverlapTokens: 0,
-	poolTargetTokens: 5_000,
-	consolidateAtPoolTokens: 10_000,
-	compactAtContextTokens: 80_000,
+	poolTargetTokens: 10_000,
+	consolidateAtPoolTokens: 15_000,
+	compactAtContextTokens: 100_000,
 	tailTokens: 20_000,
 	journeyTargetTokens: 1_000,
 	observerConcurrency: 4,

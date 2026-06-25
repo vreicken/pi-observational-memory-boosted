@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULTS } from "../src/config.js";
 import type { Entry } from "../src/ledger/index.js";
-import { renderTimeline, type TimelineState } from "../src/ui/timeline.js";
+import { renderTimeline } from "../src/ui/timeline.js";
 import {
 	compactionEntry,
 	observation,
@@ -11,7 +11,6 @@ import {
 	rawMessage,
 } from "./fixtures/session.js";
 
-const IDLE: TimelineState = { observersInFlight: 0, consolidatorInFlight: false };
 const cfg = { ...DEFAULTS, chunkTokens: 3000, consolidateAtPoolTokens: 10_000, poolTargetTokens: 5_000 };
 
 /** A big source message worth ~`tokens` (4 chars ≈ 1 token in the estimator). */
@@ -21,7 +20,7 @@ function bigMessage(id: string, tokens: number): Entry {
 
 describe("renderTimeline", () => {
 	it("renders an empty timeline when nothing has happened", () => {
-		const out = renderTimeline([], cfg, IDLE);
+		const out = renderTimeline([], cfg);
 		expect(out).toContain("(timeline empty)");
 		expect(out).toContain("0 compactions");
 	});
@@ -37,7 +36,7 @@ describe("renderTimeline", () => {
 			bigMessage("m3", 6000), // ~2 raw (unobserved) cells
 		] as Entry[];
 
-		const out = renderTimeline(branch, cfg, IDLE);
+		const out = renderTimeline(branch, cfg);
 		const strip = out.split("\n")[1];
 		expect(strip).toBe("▓▒░░▶"); // consolidated, pool, 2 raw, tip
 		expect(out).toContain("▓ .memory (1)");
@@ -53,7 +52,7 @@ describe("renderTimeline", () => {
 			}) as unknown as Entry,
 			observationsDroppedEntry("d1", { observationTimestamps: ["t1"], coversUpToId: "m1" }) as unknown as Entry,
 		] as Entry[];
-		const strip = renderTimeline(branch, cfg, IDLE).split("\n")[1];
+		const strip = renderTimeline(branch, cfg).split("\n")[1];
 		expect(strip).toBe("▚▶");
 	});
 
@@ -65,10 +64,10 @@ describe("renderTimeline", () => {
 			observationsRecordedEntry("r2", { observations: [observation("t2")], coversUpToId: "m2" }) as unknown as Entry,
 			compactionEntry("c1", { firstKeptEntryId: "m2" }) as unknown as Entry,
 		] as Entry[];
-		const strip = renderTimeline(branch, cfg, IDLE).split("\n")[1];
+		const strip = renderTimeline(branch, cfg).split("\n")[1];
 		// cut sits before the chunk covering m2 (one chunk boundary precedes m2's index)
 		expect(strip).toBe("▒┊▒▶");
-		expect(renderTimeline(branch, cfg, IDLE)).toContain("1 compaction");
+		expect(renderTimeline(branch, cfg)).toContain("1 compaction");
 	});
 
 	it("wraps the strip across rows at the given width", () => {
@@ -82,7 +81,7 @@ describe("renderTimeline", () => {
 				}) as unknown as Entry,
 			);
 		}
-		const out = renderTimeline(branch, cfg, IDLE, 2);
+		const out = renderTimeline(branch, cfg, 2);
 		const lines = out.split("\n");
 		// 5 pool cells at width 2 → rows "▒▒", "▒▒", "▒▶"
 		expect(lines[1]).toBe("▒▒");
@@ -90,13 +89,5 @@ describe("renderTimeline", () => {
 		expect(lines[3]).toBe("▒▶");
 	});
 
-	it("reflects consolidator and observer activity in the gauges", () => {
-		const branch = [
-			bigMessage("m1", 3000),
-			observationsRecordedEntry("r1", { observations: [observation("t1")], coversUpToId: "m1" }) as unknown as Entry,
-		] as Entry[];
-		const out = renderTimeline(branch, cfg, { observersInFlight: 2, consolidatorInFlight: true });
-		expect(out).toContain("consolidator: running");
-		expect(out).toContain("(2 observers in flight)");
-	});
+
 });

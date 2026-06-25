@@ -1,4 +1,5 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
+import { foldLedger, poolTokens, rawTokensSinceObservationCoverage, type Entry } from "./ledger/index.js";
 import { StatusController } from "./ui/status-controller.js";
 
 /**
@@ -101,6 +102,20 @@ export class Runtime {
 		if (this.configLoaded) return;
 		this.config = loadConfig(cwd);
 		this.configLoaded = true;
+	}
+
+	/** Recompute the live footer gauges (next-observer + pool + context) from the current branch. */
+	refreshFooterGauges(branch: Entry[], contextTokens?: number | null): void {
+		if (!this.enabled) return;
+		const folded = foldLedger(branch);
+		this.status.setGauges({
+			nextValue: rawTokensSinceObservationCoverage(branch),
+			nextMax: this.config.chunkTokens,
+			poolValue: poolTokens(folded.activeObservations),
+			poolMax: this.config.consolidateAtPoolTokens,
+			ctxValue: contextTokens ?? 0,
+			ctxMax: this.config.compactAtContextTokens,
+		});
 	}
 
 	/** Abort and forget all in-flight workers (session shutdown / disable). */
