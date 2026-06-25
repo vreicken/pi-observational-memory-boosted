@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { foldLedger, poolTokens, rawTokensSinceObservationCoverage, type Entry } from "../ledger/index.js";
 import { listTopics } from "../memory/paths.js";
 import type { Runtime } from "../runtime.js";
+import { renderTimeline } from "../ui/timeline.js";
 
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:status", {
@@ -30,6 +31,11 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`  topic files: ${topicCount}`,
 				`  context: ${contextTokens != null ? contextTokens.toLocaleString() : "?"} / ${runtime.config.compactAtContextTokens.toLocaleString()} tok`,
 				runtime.lastWorkerError ? `  last error: ${runtime.lastWorkerError}` : `  last error: none`,
+				"",
+				renderTimeline(branch, runtime.config, {
+					observersInFlight: runtime.observersInFlight.size,
+					consolidatorInFlight: runtime.consolidatorInFlight,
+				}),
 			];
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
