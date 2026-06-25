@@ -14,6 +14,8 @@
  * (decision 11). The system prompt carries role + rules only.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CONSOLIDATOR_SYSTEM } from "./consolidator/prompt.js";
+import { registerConsolidatorTools } from "./consolidator/tools.js";
 import { OBSERVER_SYSTEM } from "./observer/prompt.js";
 import { registerObserverTool } from "./observer/tool.js";
 
@@ -36,5 +38,19 @@ export default function omWorker(pi: ExtensionAPI): void {
 		return;
 	}
 
-	// Phase B: role === "consolidator". Inert for now.
+	if (role === "consolidator") {
+		if (!resultPath) throw new Error("OM_RESULT_PATH not set for consolidator worker");
+		const memoryRoot = process.env.OM_MEMORY_DIR;
+		if (!memoryRoot) throw new Error("OM_MEMORY_DIR not set for consolidator worker");
+		registerConsolidatorTools(pi, memoryRoot, resultPath);
+
+		pi.on("before_agent_start", async () => {
+			return { systemPrompt: CONSOLIDATOR_SYSTEM };
+		});
+
+		pi.on("agent_end", async (_event: unknown, ctx: { shutdown: () => void }) => {
+			ctx.shutdown();
+		});
+		return;
+	}
 }

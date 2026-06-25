@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { renderMemoryMap } from "../memory/index-render.js";
+import { listTopics } from "../memory/paths.js";
 import type { Runtime } from "../runtime.js";
 import {
 	buildCompactionProjection,
@@ -71,20 +73,31 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 	pi.on("session_before_compact", async (event: any, ctx: any) => {
 		if (!runtime.enabled || runtime.config.passive) return undefined;
 
+		const hasUI = ctx.hasUI;
 		if (runtime.compactHookInFlight) {
-			if (ctx.hasUI) ctx.ui.notify("om: another compaction is already in progress; cancelling duplicate", "warning");
+			if (hasUI) ctx.ui.notify("om: another compaction is already in progress; cancelling duplicate", "warning");
 			return { cancel: true };
 		}
 
 		runtime.compactHookInFlight = true;
 		try {
 			runtime.ensureConfig(ctx.cwd);
-			const branch = event.branchEntries as Entry[];
+
+			// R5: the chat is already paused by compaction; wait here for in-flight observers so
+			// their observations are committed before we fold. We re-read the branch AFTER the
+			// wait so just-committed `om.observations.recorded` entries are included (pi snapshots
+			// `event.branchEntries` before the hook runs, so it would be stale).
+			if (hasUI) ctx.ui.notify("om: waiting for in-flight observers before folding…", "info");
+			await runtime.whenObserversIdle();
+
+			const branch = (ctx.sessionManager?.getBranch?.() as Entry[] | undefined) ?? (event.branchEntries as Entry[]);
 			const { firstKeptEntryId, tokensBefore } = event.preparation;
 			const snapped = snapFirstKeptEntryId(branch, firstKeptEntryId, runtime.config.tailTokens);
 			const projection = buildCompactionProjection(branch, snapped);
-			// Phase A: map section is a no-op placeholder until the consolidator ships (Phase B).
-			const summary = renderSummary(undefined, projection.observations);
+			// Phase B: render the long-term memory map live from `.memory/` topic front-matter,
+			// regenerated each compaction (throwaway projection — cannot decay).
+			const map = renderMemoryMap(listTopics(ctx.cwd));
+			const summary = renderSummary(map, projection.observations);
 
 			return {
 				compaction: {

@@ -14,8 +14,9 @@ export function registerCompactCommand(pi: ExtensionAPI, runtime: Runtime): void
 				return;
 			}
 			runtime.compactInFlight = true;
-			if (ctx.hasUI) ctx.ui.notify("om: waiting for in-flight observers before compaction", "info");
-			await runtime.whenObserversIdle();
+			// The before-compact hook waits for in-flight observers before folding (design R5),
+			// so we trigger compaction straight away here too.
+			if (ctx.hasUI) ctx.ui.notify("om: compacting (waiting for in-flight observers)…", "info");
 			ctx.compact({
 				onComplete: () => {
 					runtime.compactInFlight = false;

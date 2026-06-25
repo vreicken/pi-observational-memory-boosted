@@ -11,9 +11,11 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerCompactCommand } from "./commands/compact.js";
+import { registerConsolidateCommand } from "./commands/consolidate.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerCompactionHook } from "./hooks/compaction-hook.js";
 import { registerCompactionTrigger } from "./hooks/compaction-trigger.js";
+import { registerConsolidatorTrigger } from "./hooks/consolidator-trigger.js";
 import { registerObserverTrigger } from "./hooks/observer-trigger.js";
 import { OM_ENABLED, type Entry } from "./ledger/index.js";
 import { Runtime } from "./runtime.js";
@@ -74,9 +76,11 @@ export default function observationalMemory(pi: ExtensionAPI): void {
 
 	// Triggers + hook self-gate on runtime.enabled / passive at their first line.
 	registerObserverTrigger(pi, runtime);
+	registerConsolidatorTrigger(pi, runtime);
 	registerCompactionTrigger(pi, runtime);
 	registerCompactionHook(pi, runtime);
 
 	registerStatusCommand(pi, runtime);
 	registerCompactCommand(pi, runtime);
+	registerConsolidateCommand(pi, runtime);
 }

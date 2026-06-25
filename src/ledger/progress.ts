@@ -12,6 +12,14 @@ export function isSourceEntry(entry: Entry): boolean {
 	return SOURCE_ENTRY_TYPES.has(entry.type);
 }
 
+/** Id of the last source entry on the branch (the tip). Tombstone `coversUpToId` anchor. */
+export function lastSourceEntryId(entries: Entry[]): string | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		if (isSourceEntry(entries[i])) return entries[i].id;
+	}
+	return undefined;
+}
+
 export function entryIndexById(entries: Entry[]): Map<string, number> {
 	const idToIndex = new Map<string, number>();
 	for (let i = 0; i < entries.length; i++) idToIndex.set(entries[i].id, i);

@@ -3,15 +3,14 @@
 Tiered, subprocess-backed memory for pi. Parallel **observers** distill raw conversation
 chunks into atomic observations committed to the master's branch-local **ledger** (so memory
 stays correct under `/tree`); a deterministic, model-free **compaction** renders that buffer
-verbatim into the compaction block. A **consolidator** that promotes the oldest observations
-into durable `.memory/` topic files arrives in Phase B.
+verbatim into the compaction block. A **consolidator** promotes the oldest observations into
+durable `.memory/` topic files, bounding the buffer and giving the project cross-session,
+`grep`-able long-term memory.
 
 See `PLAN.md` for the implementation plan and the design doc it derives from.
 
-> **Status: Phase A.** Short-term tier + TUI + compaction. No `.memory/` files and no
-> consolidator yet, so the observation buffer is **not yet bounded** — it grows until
-> compaction renders it (an acceptable, fully-testable intermediate state). Bounding arrives
-> with the Phase B consolidator.
+> **Status: Phase A + B.** Short-term tier (observers → ledger → compaction) and long-term
+> tier (consolidator → `.memory/` topic files) are both implemented, with full TUI.
 
 ## On/off gate (default OFF)
 
@@ -24,12 +23,18 @@ per session** and is completely invisible until you turn it on.
 State persists per session in the ledger (`om.enabled`) and survives resume. When off, every
 trigger, hook, widget, and subprocess returns immediately.
 
-## How it works (Phase A)
+## How it works
 
 ```
 raw chunks ─[parallel observers]─▶ observations ──▶ master ledger ──▶ compaction block
  (token-bounded,  (subprocess pi,    {timestamp,        (branch-local,   (deterministic,
   fixed slices)    headless)          content}           /tree-correct)   model-free)
+                                          │
+                          oldest overflow │ (pool > consolidateAtPoolTokens)
+                                          ▼
+                                   [consolidator] ──▶ .memory/<topic>.md  +  INDEX.md
+                                   (subprocess pi,     (durable, cross-session,
+                                    one at a time)      grep-able; tombstones drain buffer)
 ```
 
 - **Observer clock** (`turn_end` / `agent_start`): every `chunkTokens` of new raw history,
@@ -40,8 +45,17 @@ raw chunks ─[parallel observers]─▶ observations ──▶ master ledger �
   doubles as the id; the orchestrator re-derives a unique, second-resolution id at commit
   (the observer only emits minute resolution).
 - **Compaction** (`agent_end` over `compactAtContextTokens`, when idle): waits for in-flight
-  observers, then renders the active buffer. The cutoff snaps to an observation chunk
-  boundary so the verbatim tail is never double-represented.
+  observers, then renders the active buffer plus a **memory map** (rendered live from
+  `.memory/` topic front-matter). The cutoff snaps to an observation chunk boundary so the
+  verbatim tail is never double-represented.
+- **Consolidator clock** (`turn_end` / `agent_start`): when the active observation pool
+  exceeds `consolidateAtPoolTokens`, a single background consolidator subprocess folds the
+  **oldest** observations (above `poolTargetTokens`) into durable `.memory/<topic>.md` files,
+  then the orchestrator tombstones exactly the observations it reports — draining the buffer
+  back toward target. Topic files track the repo, not the session branch: they are **not**
+  rolled back by `/tree`. The orchestrator owns `INDEX.md` and re-renders it from topic
+  front-matter after each run; the consolidator only touches `<topic>.md` files, via its own
+  `read`/`write`/`edit`/`ls`/`grep` tools scoped to `.memory/`.
 
 Each worker is an **ordinary recorded pi session** in the global store
 (`~/.pi/agent/sessions`, under the project path) — open it in the session browser to see the
@@ -53,8 +67,9 @@ exact input chunk, tool calls, and output. Transient handoff files live in
 | Command | Effect |
 |---|---|
 | `/om`, `/om on`, `/om off` | The per-session on/off gate |
-| `/om:status` | Workers in flight, active observation count, next-observer token progress, context usage, last error |
+| `/om:status` | Workers in flight, active observation count, next-observer progress, pool/consolidator state, topic-file count, context usage, last error |
 | `/om:compact` | Force a compaction now (ignores the threshold) |
+| `/om:consolidate` | Force a consolidation now (ignores the pool threshold) |
 
 ## Configuration
 
@@ -66,8 +81,8 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
   "observational-memory": {
     "chunkTokens": 5000,
     "chunkOverlapTokens": 0,
-    "poolTargetTokens": 10000,           // Phase B
-    "consolidateAtPoolTokens": 20000,    // Phase B
+    "poolTargetTokens": 10000,           // buffer drains back toward this after consolidation
+    "consolidateAtPoolTokens": 20000,    // pool size that triggers a consolidation (200% of target)
     "compactAtContextTokens": 100000,    // tune per model
     "tailTokens": 20000,                 // verbatim tail; snaps to a chunk boundary
     "observerConcurrency": 4,
@@ -94,3 +109,5 @@ npm run typecheck # tsc --noEmit
 
 Layout: `src/` is the master-side orchestrator (entry `src/index.ts`); `agent/` is the shared
 worker extension loaded into subprocesses via `-e` (`OM_WORKER=observer|consolidator`).
+Long-term memory lives under `<project>/.memory/` (`INDEX.md` + `<topic>.md`); transient
+worker IPC under `<project>/.memory/.runs/`.

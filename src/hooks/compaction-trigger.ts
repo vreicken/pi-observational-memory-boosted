@@ -17,64 +17,48 @@ function contextPressureTokens(
 }
 
 /**
- * Trigger compaction at agent_end when live context usage crosses `compactAtContextTokens`,
- * pi is idle, and nothing else is compacting. First waits for in-flight observers so the
- * rendered block reflects settled memory state up to the cutoff (design R5).
+ * Trigger compaction on `turn_end` once live context usage crosses `compactAtContextTokens`.
+ *
+ * We fire on turn_end (not agent_end) so compaction can kick in BETWEEN turns — pausing the
+ * chat immediately — rather than only after the whole agent run settles. We call `ctx.compact()`
+ * straight away (no idle gating): waiting for in-flight observers happens inside the
+ * `session_before_compact` hook, so the chat is already paused while the observers finish and
+ * the rendered block reflects settled memory state (design R5).
  */
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
-	pi.on("agent_end", (event: any, ctx: any) => {
+	pi.on("turn_end", (event: any, ctx: any) => {
 		if (!runtime.enabled || runtime.config.passive) return;
 		if (runtime.compactInFlight) return;
 
-		// Don't compact if pi will auto-retry the just-ended turn.
-		const lastAssistant = [...event.messages].reverse().find((m: any) => m.role === "assistant");
+		// Don't compact if pi will auto-retry this turn (transient provider/network error).
+		const message = event?.message;
 		if (
-			lastAssistant?.stopReason === "error" &&
-			lastAssistant.errorMessage &&
-			RETRYABLE_ERROR_RE.test(lastAssistant.errorMessage)
+			message?.role === "assistant" &&
+			message.stopReason === "error" &&
+			message.errorMessage &&
+			RETRYABLE_ERROR_RE.test(message.errorMessage)
 		) {
 			return;
 		}
 
-		const threshold = runtime.config.compactAtContextTokens;
-		if (!contextPressureTokens(ctx, threshold).due) return;
+		if (!contextPressureTokens(ctx, runtime.config.compactAtContextTokens).due) return;
 
 		const hasUI = ctx.hasUI;
 		const ui = ctx.ui;
 		runtime.compactInFlight = true;
+		if (hasUI) ui?.notify("om: context threshold reached — compacting (waiting for in-flight observers)…", "info");
 
-		void (async () => {
-			try {
-				if (!ctx.isIdle()) {
-					runtime.compactInFlight = false;
-					return;
-				}
-				if (hasUI) ui?.notify("om: waiting for in-flight observers before compaction", "info");
-				await runtime.whenObserversIdle();
-				if (!ctx.isIdle()) {
-					runtime.compactInFlight = false;
-					return;
-				}
-				if (!contextPressureTokens(ctx, threshold).due) {
-					runtime.compactInFlight = false;
-					return;
-				}
-				ctx.compact({
-					onComplete: () => {
-						runtime.compactInFlight = false;
-						if (hasUI) ui?.notify("om: compaction complete", "info");
-					},
-					onError: (error: { message: string }) => {
-						runtime.compactInFlight = false;
-						if (error.message === "Compaction cancelled") return;
-						if (hasUI) ui?.notify(`om: ${error.message}`, "error");
-					},
-				});
-			} catch (error) {
+		// Fire-and-forget. The before-compact hook waits for observers and renders the block.
+		ctx.compact({
+			onComplete: () => {
 				runtime.compactInFlight = false;
-				const message = error instanceof Error ? error.message : String(error);
-				if (hasUI) ui?.notify(`om: compaction trigger threw: ${message}`, "error");
-			}
-		})();
+				if (hasUI) ui?.notify("om: compaction complete", "info");
+			},
+			onError: (error: { message: string }) => {
+				runtime.compactInFlight = false;
+				if (error.message === "Compaction cancelled") return;
+				if (hasUI) ui?.notify(`om: ${error.message}`, "error");
+			},
+		});
 	});
 }

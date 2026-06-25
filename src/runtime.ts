@@ -19,6 +19,14 @@ export class Runtime {
 	readonly observerTasks = new Set<Promise<void>>();
 
 	/**
+	 * Strictly one consolidator at a time (design risk 4). The flag is held from dispatch through
+	 * tombstone-commit so the pool clock cannot fire a second overlapping run. Runs in the
+	 * background — compaction does NOT wait for it (R5).
+	 */
+	consolidatorInFlight = false;
+	consolidatorController: AbortController | undefined;
+
+	/**
 	 * coversUpToId of the most-recent chunk DISPATCHED (committed or still in flight). Combined
 	 * with the committed ledger watermark, this is the effective observation watermark: it keeps
 	 * parallel observers from re-selecting the same slice and lets zero-observation chunks (which
@@ -84,13 +92,16 @@ export class Runtime {
 		this.configLoaded = true;
 	}
 
-	/** Abort and forget all in-flight observers (session shutdown / disable). */
+	/** Abort and forget all in-flight workers (session shutdown / disable). */
 	abortAllWorkers(): void {
 		this.cancelPendingToasts();
 		for (const controller of this.observersInFlight.values()) {
 			controller.abort();
 		}
 		this.observersInFlight.clear();
+		this.consolidatorController?.abort();
+		this.consolidatorController = undefined;
+		this.consolidatorInFlight = false;
 	}
 
 	/** Track an observer task for the lifetime of its async run. */

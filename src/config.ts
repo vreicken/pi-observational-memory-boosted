@@ -14,9 +14,9 @@ export interface Config {
 	chunkTokens: number;
 	/** Overlap between adjacent chunks; default 0 in v1. */
 	chunkOverlapTokens: number;
-	/** Target size of the active observation pool (Phase B). */
+	/** Target size of the active observation pool; the buffer drains back toward this after consolidation. */
 	poolTargetTokens: number;
-	/** Pool token count that triggers consolidation (Phase B; 200% of target). */
+	/** Active-pool token count that triggers a consolidation (200% of target). */
 	consolidateAtPoolTokens: number;
 	/** Live context-window usage that triggers compaction. */
 	compactAtContextTokens: number;
@@ -35,12 +35,12 @@ export interface Config {
 }
 
 export const DEFAULTS: Config = {
-	chunkTokens: 1_000,
+	chunkTokens: 3_000,
 	chunkOverlapTokens: 0,
-	poolTargetTokens: 10_000,
-	consolidateAtPoolTokens: 20_000,
-	compactAtContextTokens: 100_000,
-	tailTokens: 20_000,
+	poolTargetTokens: 5_000,
+	consolidateAtPoolTokens: 10_000,
+	compactAtContextTokens: 80_000,
+	tailTokens: 10_000,
 	observerConcurrency: 4,
 	models: {
 		observer: { provider: "anthropic", id: "claude-sonnet-4-6", thinking: "low" },

@@ -6,6 +6,7 @@ import {
 	earlierCoverageMarkerId,
 	entryIndexById,
 	isSourceEntry,
+	lastSourceEntryId,
 	latestCoverageIndex,
 	latestCoverageMarkerId,
 	rawTokensAfterIndex,
@@ -22,6 +23,21 @@ import {
 	observationsRecordedEntry,
 	textCustomMessage,
 } from "./fixtures/session.js";
+
+describe("lastSourceEntryId", () => {
+	it("returns the id of the last source entry on the branch (tombstone watermark anchor)", () => {
+		const branch = [
+			textCustomMessage("raw-1", "abcd"),
+			textCustomMessage("raw-2", "efgh"),
+			observationsRecordedEntry("om-1", { observations: [observation("2026-05-02T10:00:00")], coversUpToId: "raw-2" }),
+		];
+		expect(lastSourceEntryId(branch)).toBe("raw-2");
+	});
+
+	it("returns undefined when there are no source entries", () => {
+		expect(lastSourceEntryId([])).toBeUndefined();
+	});
+});
 
 describe("ledger progress helpers", () => {
 	it("detects only source entries", () => {

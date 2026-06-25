@@ -11,6 +11,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import type { ConfiguredModel } from "../config.js";
+import { memoryDir } from "../memory/paths.js";
 import { runResultPath } from "./runs.js";
 
 /** Repo root = two levels up from src/spawn/. The shared agent extension lives at agent/index.ts. */
@@ -113,5 +114,7 @@ export function buildWorkerEnv(role: "observer" | "consolidator", opts: Observer
 		OM_WORKER: role,
 		OM_RUN_ID: opts.runId,
 		OM_RESULT_PATH: runResultPath(opts.cwd, opts.runId),
+		// Sandbox root for the consolidator's scoped file tools (design risk 6).
+		OM_MEMORY_DIR: memoryDir(opts.cwd),
 	};
 }
