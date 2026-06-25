@@ -28,6 +28,12 @@ export interface Config {
 		observer: ConfiguredModel;
 		consolidator: ConfiguredModel;
 	};
+	/**
+	 * Resume the agent automatically after a compaction that fired mid-run (a `turn_end` with
+	 * pending tool work). A `turn_end` that is also the run's terminal turn never auto-resumes —
+	 * it stops as if nothing happened. Default true.
+	 */
+	resumeAfterMidRunCompaction: boolean;
 	/** Power-user setting: disable all triggers (distinct from the on/off gate). */
 	passive: boolean;
 	/** Emit the NDJSON debug log. */
@@ -42,6 +48,7 @@ export const DEFAULTS: Config = {
 	compactAtContextTokens: 80_000,
 	tailTokens: 10_000,
 	observerConcurrency: 4,
+	resumeAfterMidRunCompaction: true,
 	models: {
 		observer: { provider: "anthropic", id: "claude-sonnet-4-6", thinking: "low" },
 		consolidator: { provider: "anthropic", id: "claude-sonnet-4-6", thinking: "medium" },
@@ -98,6 +105,8 @@ function normalizeSettingsConfig(value: Record<string, unknown>, base: Config): 
 	}
 	// chunkOverlapTokens may legitimately be 0.
 	if (value.chunkOverlapTokens === 0) normalized.chunkOverlapTokens = 0;
+	if (typeof value.resumeAfterMidRunCompaction === "boolean")
+		normalized.resumeAfterMidRunCompaction = value.resumeAfterMidRunCompaction;
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	if (isRecord(value.models)) {

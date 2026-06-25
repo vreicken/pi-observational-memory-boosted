@@ -15,6 +15,13 @@ export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
 export const OM_FOLDED = "om.folded";
 /** Per-session on/off gate state (default OFF). See src/index.ts. */
 export const OM_ENABLED = "om.enabled";
+/**
+ * Synthetic continuation message used to resume the agent loop after a mid-run compaction
+ * (a `turn_end` that was NOT the run's terminal turn). Carried as a `role: "custom"` message
+ * with `display: false` so it is hidden from the human TUI; pi still surfaces it to the model
+ * as a user-role turn (convertToLlm rewrites custom → user). See hooks/compaction-trigger.ts.
+ */
+export const OM_RESUME = "om.resume";
 
 export type Entry = {
 	type: string;

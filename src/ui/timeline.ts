@@ -117,7 +117,7 @@ export function renderTimeline(branch: Entry[], config: Config, state: TimelineS
 	const strip = cells.length > 0 ? `${wrap(cells, width)}${GLYPH.tip}` : "(timeline empty)";
 
 	const pool = poolTokens(folded.activeObservations);
-	const consolidatorState = state.consolidatorInFlight ? "running ⠿" : "idle";
+	const consolidatorState = state.consolidatorInFlight ? "running" : "idle";
 	const observerNote =
 		state.observersInFlight > 0 ? `  (${state.observersInFlight} observer${state.observersInFlight > 1 ? "s" : ""} in flight)` : "";
 
