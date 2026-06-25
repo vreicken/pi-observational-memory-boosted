@@ -1,7 +1,9 @@
 /**
  * The consolidator's tool belt. `--no-builtin-tools` is set on the worker, so this extension
- * registers its own read/write/edit/ls/grep — all path-scoped to `.memory/` (design risk 6) —
- * plus the terminal `report_promotions` tool that writes the result file and ends the run.
+ * registers its own read/write/edit/ls/grep — all path-scoped to `.memory/` (design risk 6).
+ * There is no result file: the file edits ARE the output, and the run ends by natural exit
+ * of `pi -p` once the model emits its closing confirmation. The orchestrator then tombstones
+ * the whole provided batch (it already knows exactly what it handed over).
  *
  * Scoping: every path argument is resolved against OM_MEMORY_DIR and rejected if it escapes
  * that directory, so a wayward model cannot read or clobber the user's project.
@@ -12,7 +14,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { atomicWrite } from "../../src/memory/paths.js";
-import { writeConsolidatorResult } from "../../src/spawn/runs.js";
 
 type ToolText = { content: { type: "text"; text: string }[]; details: unknown };
 
@@ -70,12 +71,9 @@ function listFilesRecursive(dir: string): string[] {
 	return out;
 }
 
-/** Register the consolidator's scoped file tools + the terminal report_promotions tool. */
-export function registerConsolidatorTools(pi: ExtensionAPI, memoryRoot: string, resultPath: string): void {
+/** Register the consolidator's scoped file tools (read/write/edit/ls/grep), all under .memory/. */
+export function registerConsolidatorTools(pi: ExtensionAPI, memoryRoot: string): void {
 	const root = resolve(memoryRoot);
-
-	// Ensure a valid (empty) result file exists so a no-op run is still well-formed.
-	writeConsolidatorResult(resultPath, { promotedTimestamps: [] });
 
 	pi.registerTool({
 		name: "read",
@@ -163,28 +161,6 @@ export function registerConsolidatorTools(pi: ExtensionAPI, memoryRoot: string, 
 				if (hits.length >= 200) break;
 			}
 			return ok(hits.length > 0 ? hits.join("\n") : "(no matches)");
-		},
-	});
-
-	pi.registerTool({
-		name: "report_promotions",
-		label: "Report promotions",
-		description:
-			"Terminal tool. Report the exact observation timestamp ids you absorbed into topic files. " +
-			"Call this once when consolidation is complete, then emit a one-sentence confirmation.",
-		parameters: Type.Object({
-			promotedTimestamps: Type.Array(Type.String(), {
-				description: "Timestamp ids (verbatim, as given) of every observation you folded into a topic file.",
-			}),
-		}),
-		async execute(_id: string, params: { promotedTimestamps: string[] }): Promise<ToolText> {
-			const promotedTimestamps = params.promotedTimestamps.filter((t) => typeof t === "string" && t.length > 0);
-			writeConsolidatorResult(resultPath, { promotedTimestamps });
-			return ok(
-				`Recorded ${promotedTimestamps.length} promotion${promotedTimestamps.length === 1 ? "" : "s"}. ` +
-					"Consolidation complete — emit a one-sentence confirmation to end the run.",
-				{ promoted: promotedTimestamps.length },
-			);
 		},
 	});
 }

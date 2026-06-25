@@ -7,9 +7,13 @@
  * Runs in the BACKGROUND, mirroring the observer trigger (turn_end / agent_start), strictly
  * one at a time (design risk 4). Compaction does not wait for it (R5).
  *
- * Tombstone safety (design risk 4): the orchestrator tombstones only timestamps that are BOTH
- * in the promote set it handed the consolidator AND reported back AND still active — never an
- * observation an observer committed during the run.
+ * Tombstone safety (design risk 4): the orchestrator tombstones the batch it handed the
+ * consolidator, intersected with what is STILL active at exit — never an observation an
+ * observer committed during the run (those are not in the handed batch). The consolidator does
+ * not report back: it must consolidate everything it was given (filing or discarding junk is a
+ * valid outcome), so on clean exit we trust it and drop the whole batch. This guarantees the
+ * buffer always drains; a flaked-out partial run is recoverable from the worker's global session
+ * recording (the standing safety net for lossy rewrites) and is the critic tier's job to catch.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -28,7 +32,6 @@ import { renderIndexFile } from "../memory/index-render.js";
 import { atomicWrite, indexPath, listTopics } from "../memory/paths.js";
 import type { Runtime } from "../runtime.js";
 import { buildWorkerArgv, buildWorkerEnv, spawnWorker } from "../spawn/launch.js";
-import { readConsolidatorResult, runResultPath } from "../spawn/runs.js";
 
 type TriggerCtx = {
 	cwd: string;
@@ -59,8 +62,8 @@ function buildConsolidatorPrompt(cwd: string, promote: Observation[]): string {
 		"===== OBSERVATIONS TO CONSOLIDATE (each line is `<timestamp-id>  <content>`) =====\n" +
 		`${obsLines}\n` +
 		"===== END OBSERVATIONS =====\n\n" +
-		"Fold every observation above into topic files (create/merge/rewrite as needed), then call " +
-		"report_promotions with the exact timestamp ids you absorbed, and end with a one-sentence confirmation."
+		"Fold every observation above into topic files (create/merge/rewrite as needed), then end with " +
+		"a one-sentence confirmation."
 	);
 }
 
@@ -95,8 +98,6 @@ async function dispatchConsolidator(
 	runtime.consolidatorController = controller;
 	runtime.status.workerStart("consolidator", runId);
 
-	const promoteSet = new Set(promote.map((o) => o.timestamp));
-
 	try {
 		const prompt = buildConsolidatorPrompt(ctx.cwd, promote);
 		const argv = buildWorkerArgv({
@@ -110,13 +111,12 @@ async function dispatchConsolidator(
 			throw new Error(`consolidator exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr.trim().slice(0, 200)}` : ""}`);
 		}
 
-		const result = readConsolidatorResult(runResultPath(ctx.cwd, runId));
-
-		// Re-fold against the CURRENT branch so we never tombstone something already dropped or
-		// an observation that an observer committed during this run.
+		// Trust the consolidator: on clean exit it has folded (or discarded) everything we handed it.
+		// Re-fold against the CURRENT branch so we never tombstone something already dropped or an
+		// observation an observer committed during this run (those are not in the handed batch).
 		const branch = ctx.sessionManager.getBranch();
 		const stillActive = new Set(foldLedger(branch).activeObservations.map((o) => o.timestamp));
-		const toDrop = result.promotedTimestamps.filter((t) => promoteSet.has(t) && stillActive.has(t));
+		const toDrop = promote.map((o) => o.timestamp).filter((t) => stillActive.has(t));
 
 		if (toDrop.length > 0) {
 			const coversUpToId = lastSourceEntryId(branch);

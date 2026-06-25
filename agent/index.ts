@@ -39,10 +39,11 @@ export default function omWorker(pi: ExtensionAPI): void {
 	}
 
 	if (role === "consolidator") {
-		if (!resultPath) throw new Error("OM_RESULT_PATH not set for consolidator worker");
 		const memoryRoot = process.env.OM_MEMORY_DIR;
 		if (!memoryRoot) throw new Error("OM_MEMORY_DIR not set for consolidator worker");
-		registerConsolidatorTools(pi, memoryRoot, resultPath);
+		// No result file: the consolidator's output is its .memory/ edits, and the orchestrator
+		// tombstones the whole provided batch on clean exit (it knows what it handed over).
+		registerConsolidatorTools(pi, memoryRoot);
 
 		pi.on("before_agent_start", async () => {
 			return { systemPrompt: CONSOLIDATOR_SYSTEM };

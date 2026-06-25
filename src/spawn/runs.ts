@@ -56,24 +56,3 @@ export function readObserverResult(path: string): ObserverRunResult {
 export function writeObserverResult(path: string, result: ObserverRunResult): void {
 	atomicWrite(path, JSON.stringify(result));
 }
-
-/** What the consolidator reports: the observation timestamp-ids it absorbed into topic files. */
-export type ConsolidatorRunResult = {
-	promotedTimestamps: string[];
-};
-
-/** Parse + validate a consolidator result file. Throws on malformed input. */
-export function readConsolidatorResult(path: string): ConsolidatorRunResult {
-	const raw = JSON.parse(readFileSync(path, "utf-8")) as unknown;
-	if (!raw || typeof raw !== "object" || !Array.isArray((raw as { promotedTimestamps?: unknown }).promotedTimestamps)) {
-		throw new Error("consolidator result missing promotedTimestamps array");
-	}
-	const promotedTimestamps = (raw as { promotedTimestamps: unknown[] }).promotedTimestamps.filter(
-		(t): t is string => typeof t === "string" && t.length > 0,
-	);
-	return { promotedTimestamps };
-}
-
-export function writeConsolidatorResult(path: string, result: ConsolidatorRunResult): void {
-	atomicWrite(path, JSON.stringify(result));
-}
