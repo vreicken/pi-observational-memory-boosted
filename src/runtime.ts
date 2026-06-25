@@ -36,6 +36,48 @@ export class Runtime {
 
 	readonly status = new StatusController();
 
+	// ── Toast coalescer ──────────────────────────────────────────────────────────
+	// Parallel observers fire finish toasts from independent async tasks. If two
+	// land in the same event-loop tick, pi's showStatus() would replace the first
+	// with the second. queueToast() accumulates info lines and flushes them as a
+	// single multi-line notify on the next tick so both lines remain visible.
+
+	private pendingInfoToastLines: string[] = [];
+	private infoToastFlushTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/**
+	 * Queue an info-level toast line for batched delivery on the next event-loop tick.
+	 * Non-info levels (warning/error) bypass the queue and fire immediately so they
+	 * always use their own styling and are never merged with info lines.
+	 */
+	queueToast(
+		line: string,
+		level: "info" | "warning" | "error",
+		notify: (message: string, level: "info" | "warning" | "error") => void,
+	): void {
+		if (level !== "info") {
+			notify(line, level);
+			return;
+		}
+		this.pendingInfoToastLines.push(line);
+		if (this.infoToastFlushTimer !== undefined) return;
+		this.infoToastFlushTimer = setTimeout(() => {
+			this.infoToastFlushTimer = undefined;
+			const lines = this.pendingInfoToastLines.splice(0);
+			if (lines.length > 0) notify(lines.join("\n"), "info");
+		}, 0);
+		this.infoToastFlushTimer.unref?.();
+	}
+
+	/** Discard any pending toast lines (called on session shutdown). */
+	cancelPendingToasts(): void {
+		if (this.infoToastFlushTimer !== undefined) {
+			clearTimeout(this.infoToastFlushTimer);
+			this.infoToastFlushTimer = undefined;
+		}
+		this.pendingInfoToastLines = [];
+	}
+
 	ensureConfig(cwd: string): void {
 		if (this.configLoaded) return;
 		this.config = loadConfig(cwd);
@@ -44,6 +86,7 @@ export class Runtime {
 
 	/** Abort and forget all in-flight observers (session shutdown / disable). */
 	abortAllWorkers(): void {
+		this.cancelPendingToasts();
 		for (const controller of this.observersInFlight.values()) {
 			controller.abort();
 		}

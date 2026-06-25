@@ -3,11 +3,9 @@
  * (subprocess workers are headless). Three surfaces:
  *
  *   - Footer status ("om"): set once at attach, never cleared mid-session.
- *   - Per-worker widgets keyed `<type>-<runId>` so parallel observers STACK rather than
- *     overwrite each other:
- *       ◐ [observer]      working — quarter-circle spinner
- *       ✓ [observer] +4   success — holds, then clears
- *       ✗ [observer]      error — holds, then clears
+ *   - Single "om-workers" widget: all active/settling workers rendered side-by-side on
+ *     one line so parallel observers appear next to each other, not stacked vertically.
+ *       ◐ [observer]   ◐ [observer]   ✓ [observer] +4
  *   - Toasts via notify (start/finish/error), gated on hasUI by the caller.
  */
 
@@ -29,7 +27,10 @@ type WorkerState =
 	| { kind: "error" };
 
 const FOOTER_KEY = "om";
+const WORKERS_WIDGET_KEY = "om-workers";
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"] as const;
+/** Separator between worker indicators on the single combined line. */
+const WORKER_SEP = "   ";
 
 export interface StatusControllerOptions {
 	spinnerIntervalMs?: number;
@@ -62,17 +63,13 @@ export class StatusController {
 
 	detach(): void {
 		this.stopSpinner();
-		for (const [key, entry] of this.workers) {
+		for (const entry of this.workers.values()) {
 			if (entry.settleTimer) clearTimeout(entry.settleTimer);
-			this.ui?.setWidget(this.widgetKey(key), undefined);
 		}
 		this.workers.clear();
+		this.ui?.setWidget(WORKERS_WIDGET_KEY, undefined);
 		if (this.ui) this.ui.setStatus(FOOTER_KEY, undefined);
 		this.ui = undefined;
-	}
-
-	private widgetKey(runId: string): string {
-		return `om-${runId}`;
 	}
 
 	workerStart(type: WorkerType, runId: string): void {
@@ -81,7 +78,7 @@ export class StatusController {
 		if (existing?.settleTimer) clearTimeout(existing.settleTimer);
 		this.workers.set(runId, { type, state: { kind: "running" } });
 		this.startSpinner();
-		this.renderWorker(runId);
+		this.renderWorkersWidget();
 	}
 
 	workerDone(runId: string, delta?: number): void {
@@ -98,10 +95,12 @@ export class StatusController {
 		if (!entry) return;
 		if (entry.settleTimer) clearTimeout(entry.settleTimer);
 		entry.state = state;
-		this.renderWorker(runId);
+		this.renderWorkersWidget();
 		entry.settleTimer = setTimeout(() => {
 			this.workers.delete(runId);
-			this.ui?.setWidget(this.widgetKey(runId), undefined);
+			// Re-render the combined widget with this worker removed, or clear
+			// the widget entirely if the last worker just left.
+			this.renderWorkersWidget();
 			if (!this.hasRunningWorker()) this.stopSpinner();
 		}, this.settleMs);
 		entry.settleTimer.unref?.();
@@ -119,9 +118,8 @@ export class StatusController {
 		if (this.spinnerTimer) return;
 		this.spinnerTimer = setInterval(() => {
 			this.frame = (this.frame + 1) % SPINNER_FRAMES.length;
-			for (const [runId, entry] of this.workers) {
-				if (entry.state.kind === "running") this.renderWorker(runId);
-			}
+			// One re-render of the combined widget per tick covers all running workers.
+			if (this.hasRunningWorker()) this.renderWorkersWidget();
 		}, this.spinnerIntervalMs);
 		this.spinnerTimer.unref?.();
 	}
@@ -138,21 +136,32 @@ export class StatusController {
 		return `${theme.fg("muted", "○")} ${theme.fg("muted", "om")}`;
 	}
 
-	private renderWorker(runId: string): void {
+	/**
+	 * Render all active/settling workers onto a single "om-workers" widget line so they
+	 * appear side-by-side rather than stacking vertically. Clears the widget when empty.
+	 */
+	private renderWorkersWidget(): void {
 		const ui = this.ui;
-		const entry = this.workers.get(runId);
-		if (!ui || !entry) return;
-		const theme = ui.theme;
-		const label = theme.fg("muted", `[${entry.type}]`);
-		let line: string;
-		if (entry.state.kind === "running") {
-			line = `${theme.fg("accent", SPINNER_FRAMES[this.frame])} ${theme.fg("accent", `[${entry.type}]`)}`;
-		} else if (entry.state.kind === "error") {
-			line = `${theme.fg("error", "✗")} ${label}`;
-		} else {
-			const delta = entry.state.delta && entry.state.delta > 0 ? ` ${theme.fg("success", `+${entry.state.delta}`)}` : "";
-			line = `${theme.fg("success", "✓")} ${label}${delta}`;
+		if (!ui) return;
+		if (this.workers.size === 0) {
+			ui.setWidget(WORKERS_WIDGET_KEY, undefined);
+			return;
 		}
-		ui.setWidget(this.widgetKey(runId), [line]);
+		const theme = ui.theme;
+		const parts: string[] = [];
+		for (const entry of this.workers.values()) {
+			if (entry.state.kind === "running") {
+				parts.push(`${theme.fg("accent", SPINNER_FRAMES[this.frame])} ${theme.fg("accent", `[${entry.type}]`)}`);
+			} else if (entry.state.kind === "error") {
+				parts.push(`${theme.fg("error", "✗")} ${theme.fg("muted", `[${entry.type}]`)}`);
+			} else {
+				const delta =
+					entry.state.delta && entry.state.delta > 0
+						? ` ${theme.fg("success", `+${entry.state.delta}`)}`
+						: "";
+				parts.push(`${theme.fg("success", "✓")} ${theme.fg("muted", `[${entry.type}]`)}${delta}`);
+			}
+		}
+		ui.setWidget(WORKERS_WIDGET_KEY, [parts.join(WORKER_SEP)]);
 	}
 }

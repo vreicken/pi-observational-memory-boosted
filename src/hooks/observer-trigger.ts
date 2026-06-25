@@ -59,19 +59,29 @@ export function evaluateObserverTriggers(pi: ExtensionAPI, runtime: Runtime, ctx
 	const ui = ctx.ui;
 	const sessionManager = ctx.sessionManager;
 
+	// Collect one start-toast line per dispatched chunk, then fire a single batched
+	// notify after the loop. Firing inside the loop would cause pi's showStatus() to
+	// replace the previous line — only the last toast would survive.
+	const startToastLines: string[] = [];
+
 	while (runtime.observerSlotsAvailable > 0) {
 		const branch = sessionManager.getBranch();
 		const watermarkId = effectiveWatermarkId(runtime, branch);
 		const watermarkIndex = entryIndexForId(branch, watermarkId);
 		const remaining = rawTokensAfterIndex(branch, watermarkIndex);
-		if (remaining < runtime.config.chunkTokens) return;
+		// Use break (not return) so execution always reaches the post-loop notify.
+		// A return here would exit the function before the batched start-toast fires.
+		if (remaining < runtime.config.chunkTokens) break;
 
 		const slice = selectSourceSlice(branch, watermarkId, runtime.config.chunkTokens);
-		if (slice.entries.length === 0 || !slice.coversUpToId) return;
+		if (slice.entries.length === 0 || !slice.coversUpToId) break;
 
 		runtime.dispatchedCoversUpToId = slice.coversUpToId;
 		runtime.trackObserverTask(dispatchObserver(pi, runtime, { cwd, hasUI, ui, sessionManager }, slice));
+		if (hasUI) startToastLines.push(`om: observer started (~${slice.tokens.toLocaleString()} tok)`);
 	}
+
+	if (startToastLines.length > 0) ui?.notify(startToastLines.join("\n"), "info");
 }
 
 async function dispatchObserver(
@@ -88,8 +98,9 @@ async function dispatchObserver(
 	const coversUpToId = slice.coversUpToId!;
 	const lastEntry = slice.entries.at(-1);
 
+	// Start toast is fired as a batch by evaluateObserverTriggers after the dispatch
+	// loop, not here, so simultaneous starts coalesce into one multi-line notify.
 	runtime.status.workerStart("observer", runId);
-	if (ctx.hasUI) ctx.ui?.notify(`om: observer started (~${slice.tokens.toLocaleString()} tok)`, "info");
 
 	try {
 		// The chunk IS the recorded user prompt (passed via `pi -p`), not an ephemeral
@@ -124,13 +135,21 @@ async function dispatchObserver(
 			pi.appendEntry(OM_OBSERVATIONS_RECORDED, { observations, coversUpToId });
 		}
 		runtime.status.workerDone(runId, observations.length);
-		if (ctx.hasUI) {
-			ctx.ui?.notify(`om: observer +${observations.length} (~${slice.tokens.toLocaleString()} tok)`, "info");
+		if (ctx.hasUI && ctx.ui) {
+			// Route through the coalescer: if another observer finishes in the same
+			// tick its line joins this one in a single multi-line notify call.
+			runtime.queueToast(
+				`om: observer +${observations.length} (~${slice.tokens.toLocaleString()} tok)`,
+				"info",
+				ctx.ui.notify.bind(ctx.ui),
+			);
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		runtime.lastWorkerError = message;
 		runtime.status.workerError(runId);
+		// Errors bypass the coalescer: they use a different display level and
+		// should never be merged with info lines.
 		if (ctx.hasUI) ctx.ui?.notify(`om: observer failed: ${message}`, "error");
 	} finally {
 		runtime.observersInFlight.delete(runId);

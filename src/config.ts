@@ -35,7 +35,7 @@ export interface Config {
 }
 
 export const DEFAULTS: Config = {
-	chunkTokens: 5_000,
+	chunkTokens: 1_000,
 	chunkOverlapTokens: 0,
 	poolTargetTokens: 10_000,
 	consolidateAtPoolTokens: 20_000,
