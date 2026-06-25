@@ -46,16 +46,23 @@ raw chunks ─[parallel observers]─▶ observations ──▶ master ledger �
   (the observer only emits minute resolution).
 - **Compaction** (`agent_end` over `compactAtContextTokens`, when idle): waits for in-flight
   observers, then renders the active buffer plus a **memory map** (rendered live from
-  `.memory/` topic front-matter). The cutoff snaps to an observation chunk boundary so the
-  verbatim tail is never double-represented.
+  `.memory/` topic front-matter) and a **journey** section (`.memory/JOURNEY.md`, read
+  verbatim). The cutoff snaps to an observation chunk boundary so the verbatim tail is never
+  double-represented.
 - **Consolidator clock** (`turn_end` / `agent_start`): when the active observation pool
   exceeds `consolidateAtPoolTokens`, a single background consolidator subprocess folds the
   **oldest** observations (above `poolTargetTokens`) into durable `.memory/<topic>.md` files,
   then the orchestrator tombstones exactly the observations it reports — draining the buffer
   back toward target. Topic files track the repo, not the session branch: they are **not**
   rolled back by `/tree`. The orchestrator owns `INDEX.md` and re-renders it from topic
-  front-matter after each run; the consolidator only touches `<topic>.md` files, via its own
-  `read`/`write`/`edit`/`ls`/`grep` tools scoped to `.memory/`.
+  front-matter after each run; the consolidator touches `<topic>.md` files plus `JOURNEY.md`,
+  via its own `read`/`write`/`edit`/`ls`/`grep` tools scoped to `.memory/`.
+- **Journey** (`.memory/JOURNEY.md`): a single, whole-project, purely **descriptive** prose
+  history of how the work got to its current state, maintained by the consolidator and pushed
+  into every compaction block for **orientation** (not recall, not instructions). It is
+  append-mostly: each consolidation adds a short dated segment and compresses the oldest
+  segments only once the file exceeds `journeyTargetTokens`, so recent history stays detailed
+  and the section stays bounded. Like the topic files it does **not** roll back under `/tree`.
 
 Each worker is an **ordinary recorded pi session** in the global store
 (`~/.pi/agent/sessions`, under the project path) — open it in the session browser to see the
@@ -67,7 +74,7 @@ exact input chunk, tool calls, and output. Transient handoff files live in
 | Command | Effect |
 |---|---|
 | `/om`, `/om on`, `/om off` | The per-session on/off gate |
-| `/om:status` | Workers in flight, active observation count, next-observer progress, pool/consolidator state, topic-file count, context usage, last error |
+| `/om:status` | Workers in flight, active observation count, next-observer progress, pool/consolidator state, topic-file count, journey size, context usage, last error |
 | `/om:compact` | Force a compaction now (ignores the threshold) |
 | `/om:consolidate` | Force a consolidation now (ignores the pool threshold) |
 
@@ -85,6 +92,7 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
     "consolidateAtPoolTokens": 20000,    // pool size that triggers a consolidation (200% of target)
     "compactAtContextTokens": 100000,    // tune per model
     "tailTokens": 20000,                 // verbatim tail; snaps to a chunk boundary
+    "journeyTargetTokens": 1000,         // pushed JOURNEY.md size; compress oldest segments past this
     "observerConcurrency": 4,
     "models": {
       "observer":     { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "low" },

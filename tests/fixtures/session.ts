@@ -36,6 +36,30 @@ export function rawMessage(id: string, text: string, overrides: Partial<TestEntr
 	};
 }
 
+/** An assistant message that issues a tool call — the entry a tool result must stay attached to. */
+export function assistantToolCallMessage(
+	id: string,
+	args: { text?: string; toolName?: string; toolCallId?: string; arguments?: unknown } = {},
+	overrides: Partial<TestEntry> = {},
+): TestEntry {
+	const content: unknown[] = [];
+	if (args.text) content.push({ type: "text", text: args.text });
+	content.push({
+		type: "toolCall",
+		id: args.toolCallId ?? `${id}-call`,
+		name: args.toolName ?? "bash",
+		arguments: args.arguments ?? {},
+	});
+	return {
+		type: "message",
+		id,
+		parentId: null,
+		timestamp: DEFAULT_TIMESTAMP,
+		message: { role: "assistant", content },
+		...overrides,
+	};
+}
+
 /** A tool-result message entry — a source entry that is NOT a valid compaction cut point. */
 export function toolResultMessage(id: string, text: string, overrides: Partial<TestEntry> = {}): TestEntry {
 	return {

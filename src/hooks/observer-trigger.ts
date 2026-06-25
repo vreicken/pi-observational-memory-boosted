@@ -92,10 +92,10 @@ async function dispatchObserver(
 ): Promise<void> {
 	const runId = nextRunId();
 	const controller = new AbortController();
-	runtime.observersInFlight.set(runId, controller);
+	const coversUpToId = slice.coversUpToId!;
+	runtime.observersInFlight.set(runId, { controller, coversUpToId });
 
 	const { text: chunkText } = serializeSourceAddressedBranchEntries(slice.entries);
-	const coversUpToId = slice.coversUpToId!;
 	const lastEntry = slice.entries.at(-1);
 
 	// Start toast is fired as a batch by evaluateObserverTriggers after the dispatch

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderIndexFile, renderMemoryMap } from "../src/memory/index-render.js";
-import { atomicWrite, listTopics, parseFrontMatter, resolveWithinMemory } from "../src/memory/paths.js";
+import { atomicWrite, listTopics, parseFrontMatter, readJourney, resolveWithinMemory } from "../src/memory/paths.js";
 
 let cwd: string;
 
@@ -54,8 +54,9 @@ describe("parseFrontMatter", () => {
 });
 
 describe("listTopics", () => {
-	it("returns parsed topics excluding INDEX.md, sorted by filename", () => {
+	it("returns parsed topics excluding INDEX.md and JOURNEY.md, sorted by filename", () => {
 		writeTopic("INDEX.md", "# Memory index");
+		writeTopic("JOURNEY.md", "## 2026-05-01\nStarted the project.");
 		writeTopic("zebra.md", "---\nid: zebra\ntitle: Zebra\nsummary: z\n---\nbody");
 		writeTopic("auth.md", "---\nid: auth\ntitle: Auth\nsummary: a\n---\nbody");
 		const topics = listTopics(cwd);
@@ -65,6 +66,22 @@ describe("listTopics", () => {
 
 	it("returns [] when .memory/ does not exist", () => {
 		expect(listTopics(cwd)).toEqual([]);
+	});
+});
+
+describe("readJourney", () => {
+	it("returns undefined when JOURNEY.md is absent", () => {
+		expect(readJourney(cwd)).toBeUndefined();
+	});
+
+	it("returns the trimmed body when present", () => {
+		writeTopic("JOURNEY.md", "\n## 2026-05-01\nStarted the project.\n\n");
+		expect(readJourney(cwd)).toBe("## 2026-05-01\nStarted the project.");
+	});
+
+	it("returns undefined when JOURNEY.md is effectively empty", () => {
+		writeTopic("JOURNEY.md", "   \n\n");
+		expect(readJourney(cwd)).toBeUndefined();
 	});
 });
 

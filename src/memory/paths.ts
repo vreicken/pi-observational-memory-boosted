@@ -14,6 +14,12 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFile
 import { dirname, join, relative, resolve } from "node:path";
 
 export const INDEX_FILENAME = "INDEX.md";
+/**
+ * The running, whole-project descriptive history. Consolidator-authored prose (no front-matter),
+ * pushed into every compaction block for orientation. Like INDEX.md it is a special file, NOT a
+ * topic file: it is excluded from `listTopics`/the memory map and read verbatim at compaction.
+ */
+export const JOURNEY_FILENAME = "JOURNEY.md";
 
 export function memoryDir(cwd: string): string {
 	return join(cwd, ".memory");
@@ -21,6 +27,22 @@ export function memoryDir(cwd: string): string {
 
 export function indexPath(cwd: string): string {
 	return join(memoryDir(cwd), INDEX_FILENAME);
+}
+
+export function journeyPath(cwd: string): string {
+	return join(memoryDir(cwd), JOURNEY_FILENAME);
+}
+
+/** Read `.memory/JOURNEY.md` body, trimmed. Returns undefined when missing or effectively empty. */
+export function readJourney(cwd: string): string | undefined {
+	const path = journeyPath(cwd);
+	if (!existsSync(path)) return undefined;
+	try {
+		const body = readFileSync(path, "utf-8").trim();
+		return body.length > 0 ? body : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Atomic write (temp + rename). Creates parent dirs as needed. */
@@ -94,7 +116,7 @@ export function listTopics(cwd: string): Topic[] {
 	if (!existsSync(dir)) return [];
 	const topics: Topic[] = [];
 	for (const filename of readdirSync(dir)) {
-		if (!filename.endsWith(".md") || filename === INDEX_FILENAME) continue;
+		if (!filename.endsWith(".md") || filename === INDEX_FILENAME || filename === JOURNEY_FILENAME) continue;
 		let content: string;
 		try {
 			content = readFileSync(join(dir, filename), "utf-8");

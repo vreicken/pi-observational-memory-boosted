@@ -12,8 +12,13 @@ export class Runtime {
 	/** The per-session on/off gate (default OFF). Outermost guard in every handler. */
 	enabled = false;
 
-	/** In-flight observer subprocesses, keyed by runId, with their abort controllers. */
-	readonly observersInFlight = new Map<string, AbortController>();
+	/**
+	 * In-flight observer subprocesses, keyed by runId. `coversUpToId` is the source-entry id at
+	 * the END of the observer's chunk — it lets compaction decide whether the observer can affect
+	 * the rendered block (an observer whose chunk lands entirely in the verbatim tail is excluded
+	 * from the projection regardless, so compaction need not wait for it).
+	 */
+	readonly observersInFlight = new Map<string, { controller: AbortController; coversUpToId: string }>();
 
 	/** In-flight observer async tasks, so compaction can wait for settled memory state (design R5). */
 	readonly observerTasks = new Set<Promise<void>>();
@@ -41,6 +46,12 @@ export class Runtime {
 
 	/** Last worker error message, surfaced by /om:status. */
 	lastWorkerError: string | undefined;
+
+	/**
+	 * Whether the last compaction waited for in-flight observers or skipped the wait (fast path:
+	 * no in-flight observer could affect the rendered block). Surfaced by /om:status.
+	 */
+	lastCompactionObserverWait: "skipped" | "waited" | undefined;
 
 	readonly status = new StatusController();
 
@@ -95,7 +106,7 @@ export class Runtime {
 	/** Abort and forget all in-flight workers (session shutdown / disable). */
 	abortAllWorkers(): void {
 		this.cancelPendingToasts();
-		for (const controller of this.observersInFlight.values()) {
+		for (const { controller } of this.observersInFlight.values()) {
 			controller.abort();
 		}
 		this.observersInFlight.clear();

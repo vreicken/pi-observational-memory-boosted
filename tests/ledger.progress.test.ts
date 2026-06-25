@@ -21,7 +21,10 @@ import {
 	observation,
 	observationsDroppedEntry,
 	observationsRecordedEntry,
+	assistantToolCallMessage,
+	rawMessage,
 	textCustomMessage,
+	toolResultMessage,
 } from "./fixtures/session.js";
 
 describe("lastSourceEntryId", () => {
@@ -133,6 +136,35 @@ describe("selectSourceSlice", () => {
 
 	it("always includes at least one source entry even if oversized", () => {
 		const entries = [textCustomMessage("raw-1", "x".repeat(400))]; // 100 tokens
+		const slice = selectSourceSlice(entries, undefined, 10);
+		expect(slice.entries.map((e) => e.id)).toEqual(["raw-1"]);
+		expect(slice.coversUpToId).toBe("raw-1");
+	});
+
+	it("never ends a chunk between a tool call and its result, even past the token budget", () => {
+		const entries = [
+			rawMessage("raw-1", "a".repeat(40)), // 10 tokens (the watermark)
+			assistantToolCallMessage("asst-1", { arguments: { cmd: "x".repeat(40) } }), // ~10+ tokens, tool call
+			toolResultMessage("tr-1", "b".repeat(40)), // 10 tokens, must stay with asst-1
+			rawMessage("raw-2", "c".repeat(40)), // 10 tokens — the valid next-chunk start
+		];
+
+		// Budget is exceeded right at the tool result, but it is not a valid cut point, so the
+		// slice extends to include it and only breaks at the following user message.
+		const slice = selectSourceSlice(entries, "raw-1", 15);
+		expect(slice.entries.map((e) => e.id)).toEqual(["asst-1", "tr-1"]);
+		expect(slice.coversUpToId).toBe("tr-1");
+	});
+
+	it("breaks before an assistant tool call so the call and result move to the next chunk together", () => {
+		const entries = [
+			rawMessage("raw-1", "a".repeat(40)), // 10 tokens
+			assistantToolCallMessage("asst-1", { arguments: { cmd: "x".repeat(40) } }), // tool call
+			toolResultMessage("tr-1", "b".repeat(40)), // result
+		];
+
+		// raw-1 fills the budget; the next entry is the assistant tool call (a valid cut point),
+		// so the chunk ends at raw-1 and the call+result start the following chunk.
 		const slice = selectSourceSlice(entries, undefined, 10);
 		expect(slice.entries.map((e) => e.id)).toEqual(["raw-1"]);
 		expect(slice.coversUpToId).toBe("raw-1");

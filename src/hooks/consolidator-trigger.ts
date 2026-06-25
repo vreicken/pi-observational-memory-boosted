@@ -29,7 +29,7 @@ import {
 } from "../ledger/index.js";
 import { nowTimestamp } from "../ledger/serialize.js";
 import { renderIndexFile } from "../memory/index-render.js";
-import { atomicWrite, indexPath, listTopics } from "../memory/paths.js";
+import { atomicWrite, indexPath, listTopics, readJourney } from "../memory/paths.js";
 import type { Runtime } from "../runtime.js";
 import { buildWorkerArgv, buildWorkerEnv, spawnWorker } from "../spawn/launch.js";
 
@@ -48,22 +48,32 @@ function nextRunId(): string {
 	return `cons-${stamp}-${process.pid}-${runCounter}`;
 }
 
-/** Build the consolidator's `-p` prompt: current time + current index + the overflow lines. */
-function buildConsolidatorPrompt(cwd: string, promote: Observation[]): string {
+/**
+ * Build the consolidator's `-p` prompt: current time + current index + current journey + the
+ * overflow lines. The journey is included verbatim so the consolidator updates it in place
+ * (append a segment for this batch; compress the old tail only if over `journeyTargetTokens`).
+ */
+function buildConsolidatorPrompt(cwd: string, promote: Observation[], journeyTargetTokens: number): string {
 	const indexText = renderIndexFile(listTopics(cwd));
+	const journeyText = readJourney(cwd);
+	const journeyWords = Math.round((journeyTargetTokens * 3) / 4);
 	const obsLines = sortObservations(promote).map(observationToLine).join("\n");
 	return (
 		`Current local time: ${nowTimestamp()}\n\n` +
 		"You are folding the observations below into the durable topic files under .memory/. " +
-		"Use this exact time string in the `updated` front-matter of any file you write.\n\n" +
+		"Use this exact time string in the `updated` front-matter of any file you write, and in any new JOURNEY.md entry.\n\n" +
 		"===== CURRENT MEMORY INDEX (generated; do not edit INDEX.md) =====\n" +
 		`${indexText}\n` +
 		"===== END MEMORY INDEX =====\n\n" +
+		"===== CURRENT JOURNEY (.memory/JOURNEY.md — the running descriptive project history) =====\n" +
+		`${journeyText ?? "(empty — no journey yet; start one)"}\n` +
+		"===== END JOURNEY =====\n\n" +
 		"===== OBSERVATIONS TO CONSOLIDATE (each line is `<timestamp-id>  <content>`) =====\n" +
 		`${obsLines}\n` +
 		"===== END OBSERVATIONS =====\n\n" +
-		"Fold every observation above into topic files (create/merge/rewrite as needed), then end with " +
-		"a one-sentence confirmation."
+		"Fold every observation above into topic files (create/merge/rewrite as needed). Then update " +
+		`.memory/JOURNEY.md per your instructions — keep it under ~${journeyTargetTokens} tokens (~${journeyWords} words), ` +
+		"purely descriptive, no advice or next steps. Finish with a one-sentence confirmation."
 	);
 }
 
@@ -99,7 +109,7 @@ async function dispatchConsolidator(
 	runtime.status.workerStart("consolidator", runId);
 
 	try {
-		const prompt = buildConsolidatorPrompt(ctx.cwd, promote);
+		const prompt = buildConsolidatorPrompt(ctx.cwd, promote, runtime.config.journeyTargetTokens);
 		const argv = buildWorkerArgv({
 			model: runtime.config.models.consolidator,
 			sessionName: `om-consolidator-${runId}`,

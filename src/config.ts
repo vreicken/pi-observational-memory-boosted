@@ -22,6 +22,12 @@ export interface Config {
 	compactAtContextTokens: number;
 	/** Verbatim raw tail kept after the cutoff; snaps to a chunk boundary. */
 	tailTokens: number;
+	/**
+	 * Target size of `.memory/JOURNEY.md`, the running descriptive project history the
+	 * consolidator appends to and pushes into every compaction block. When the file grows past
+	 * this, the consolidator compresses its oldest entries (recent history stays detailed).
+	 */
+	journeyTargetTokens: number;
 	/** Max simultaneous in-flight observer subprocesses. */
 	observerConcurrency: number;
 	models: {
@@ -46,7 +52,8 @@ export const DEFAULTS: Config = {
 	poolTargetTokens: 5_000,
 	consolidateAtPoolTokens: 10_000,
 	compactAtContextTokens: 80_000,
-	tailTokens: 10_000,
+	tailTokens: 20_000,
+	journeyTargetTokens: 1_000,
 	observerConcurrency: 4,
 	resumeAfterMidRunCompaction: true,
 	models: {
@@ -97,6 +104,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>, base: Config): 
 		"consolidateAtPoolTokens",
 		"compactAtContextTokens",
 		"tailTokens",
+		"journeyTargetTokens",
 		"observerConcurrency",
 	] as const;
 	for (const key of numberKeys) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildCompactionProjection, renderSummary } from "../src/ledger/index.js";
-import { snapFirstKeptEntryId } from "../src/hooks/compaction-hook.js";
+import { canSkipObserverWait, snapCutoff, snapFirstKeptEntryId } from "../src/hooks/compaction-hook.js";
 import {
 	observation,
 	observationsRecordedEntry,
@@ -52,6 +52,53 @@ describe("snapFirstKeptEntryId", () => {
 	});
 });
 
+describe("canSkipObserverWait (R5 fast path)", () => {
+	// Two committed chunks; cutoff snaps to raw-4 boundary (keep raw-5). Tail after raw-4 = 10.
+	const branch = [
+		rawMessage("raw-1", body),
+		rawMessage("raw-2", body),
+		observationsRecordedEntry("om-1", { observations: [observation("2026-05-02T10:00:01")], coversUpToId: "raw-2" }),
+		rawMessage("raw-3", body),
+		rawMessage("raw-4", body),
+		observationsRecordedEntry("om-2", { observations: [observation("2026-05-02T10:05:00")], coversUpToId: "raw-4" }),
+		rawMessage("raw-5", body),
+		rawMessage("raw-6", body),
+	];
+	const snap = snapCutoff(branch, "raw-6", 20); // firstKeptId raw-5, tail 20 (raw-5 + raw-6)
+
+	it("skips when there are no in-flight observers and the tail is at/under target", () => {
+		expect(snap.firstKeptId).toBe("raw-5");
+		expect(snap.tail).toBe(20);
+		expect(canSkipObserverWait(branch, snap.firstKeptId, snap.tail, 20, [])).toBe(true);
+	});
+
+	it("skips when every in-flight observer covers a chunk in the verbatim tail", () => {
+		// Observer working raw-6 (after the raw-5 cutoff) → excluded from the projection anyway.
+		expect(canSkipObserverWait(branch, snap.firstKeptId, snap.tail, 20, [{ coversUpToId: "raw-6" }])).toBe(true);
+	});
+
+	it("waits when an in-flight observer covers a chunk at/before the cutoff", () => {
+		// A slow observer still on raw-2 (before the raw-5 cutoff) would enter the projection.
+		expect(canSkipObserverWait(branch, snap.firstKeptId, snap.tail, 20, [{ coversUpToId: "raw-2" }])).toBe(false);
+	});
+
+	it("waits when the in-flight observer's coversUpToId does not resolve in the branch", () => {
+		expect(canSkipObserverWait(branch, snap.firstKeptId, snap.tail, 20, [{ coversUpToId: "ghost" }])).toBe(false);
+	});
+
+	it("waits when the snapped tail exceeds tailTokens (snap could still move)", () => {
+		// tailTokens 5 < actual tail 10 → a just-committed tail boundary could become a better snap.
+		expect(canSkipObserverWait(branch, snap.firstKeptId, snap.tail, 5, [])).toBe(false);
+	});
+
+	it("waits when snap fell back to pi's proposal (no qualifying boundary)", () => {
+		const bare = [rawMessage("raw-1", body), rawMessage("raw-2", body)];
+		const fallback = snapCutoff(bare, "raw-2", 5);
+		expect(fallback.tail).toBeUndefined();
+		expect(canSkipObserverWait(bare, fallback.firstKeptId, fallback.tail, 5, [])).toBe(false);
+	});
+});
+
 describe("cutoff ↔ projection integration (no double representation)", () => {
 	it("renders exactly the observations whose source precedes the snapped cutoff", () => {
 		const branch = [
@@ -71,7 +118,7 @@ describe("cutoff ↔ projection integration (no double representation)", () => {
 		// Both chunks precede the cutoff (raw-5); both render, nothing in the verbatim tail.
 		expect(projection.observations.map((o) => o.content)).toEqual(["early", "late"]);
 
-		const summary = renderSummary(undefined, projection.observations);
+		const summary = renderSummary(undefined, undefined, projection.observations);
 		expect(summary).toContain("2026-05-02T10:00:01  early");
 		expect(summary).toContain("2026-05-02T10:05:00  late");
 	});

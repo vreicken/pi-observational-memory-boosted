@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { foldLedger, poolTokens, rawTokensSinceObservationCoverage, type Entry } from "../ledger/index.js";
-import { listTopics } from "../memory/paths.js";
+import { listTopics, readJourney } from "../memory/paths.js";
+import { estimateStringTokens } from "../tokens.js";
 import type { Runtime } from "../runtime.js";
 import { renderTimeline } from "../ui/timeline.js";
 
@@ -20,6 +21,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const contextTokens = ctx.getContextUsage?.()?.tokens ?? null;
 			const pool = poolTokens(folded.activeObservations);
 			const topicCount = listTopics(ctx.cwd).length;
+			const journey = readJourney(ctx.cwd);
 
 			const lines = [
 				`om status`,
@@ -28,7 +30,9 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`  next observer: ${sinceObservation.toLocaleString()} / ${runtime.config.chunkTokens.toLocaleString()} tok`,
 				`  pool: ${pool.toLocaleString()} tok (target ${runtime.config.poolTargetTokens.toLocaleString()}, consolidate at ${runtime.config.consolidateAtPoolTokens.toLocaleString()})`,
 				`  consolidator: ${runtime.consolidatorInFlight ? "running" : "idle"}`,
+				`  last compaction wait: ${runtime.lastCompactionObserverWait ?? "n/a"}`,
 				`  topic files: ${topicCount}`,
+				`  journey: ${journey ? `~${estimateStringTokens(journey).toLocaleString()} / ${runtime.config.journeyTargetTokens.toLocaleString()} tok` : "none yet"}`,
 				`  context: ${contextTokens != null ? contextTokens.toLocaleString() : "?"} / ${runtime.config.compactAtContextTokens.toLocaleString()} tok`,
 				runtime.lastWorkerError ? `  last error: ${runtime.lastWorkerError}` : `  last error: none`,
 				"",

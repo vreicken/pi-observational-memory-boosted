@@ -12,6 +12,23 @@ export function isSourceEntry(entry: Entry): boolean {
 	return SOURCE_ENTRY_TYPES.has(entry.type);
 }
 
+/**
+ * A source entry is a valid chunk/compaction boundary only if it can legitimately START a
+ * chunk — i.e. it is not a tool-result message. In pi a tool call (an assistant message) and
+ * its result(s) are SEPARATE source entries; a boundary placed between them would split a
+ * tool call from its result across two chunks. Anchoring boundaries to non-tool-result entries
+ * keeps every tool call together with its result in the same chunk (and the same verbatim tail
+ * at compaction). Shared by `selectSourceSlice` (chunk cutting) and the compaction snapper.
+ */
+export function isValidCutPoint(entry: Entry): boolean {
+	if (entry.type === "custom_message" || entry.type === "branch_summary") return true;
+	if (entry.type === "message") {
+		const role = (entry.message as { role?: string } | undefined)?.role;
+		return role === "user" || role === "assistant";
+	}
+	return false;
+}
+
 /** Id of the last source entry on the branch (the tip). Tombstone `coversUpToId` anchor. */
 export function lastSourceEntryId(entries: Entry[]): string | undefined {
 	for (let i = entries.length - 1; i >= 0; i--) {
@@ -146,6 +163,12 @@ export type SourceSlice = {
  * (the latest covered watermark), accumulated until adding the next entry would exceed
  * `chunkTokens`. Always includes at least one source entry so progress never stalls on a
  * single oversized entry. Non-source entries (ledger records, compaction) are skipped.
+ *
+ * The cut only lands on a valid boundary (`isValidCutPoint`): a chunk never ends with a tool
+ * call whose result is a separate, later entry. When the token budget is reached but the next
+ * entry is a tool result, the slice keeps extending past the budget until it reaches an entry
+ * that may legitimately start the next chunk — so tool calls and their results always stay in
+ * the same chunk.
  */
 export function selectSourceSlice(entries: Entry[], afterEntryId: string | undefined, chunkTokens: number): SourceSlice {
 	const startIndex = afterEntryId ? entryIndexForId(entries, afterEntryId) : -1;
@@ -157,7 +180,10 @@ export function selectSourceSlice(entries: Entry[], afterEntryId: string | undef
 		const entry = entries[i];
 		if (!isSourceEntry(entry)) continue;
 		const entryTokens = estimateEntryTokens(entry);
-		if (slice.length > 0 && tokens + entryTokens > chunkTokens) break;
+		// Break only when over budget AND `entry` could legitimately start the next chunk.
+		// If `entry` is a tool result, breaking here would orphan it from its tool call in the
+		// previous chunk, so keep extending instead.
+		if (slice.length > 0 && tokens + entryTokens > chunkTokens && isValidCutPoint(entry)) break;
 		slice.push(entry);
 		tokens += entryTokens;
 		coversUpToId = entry.id;
