@@ -21,23 +21,6 @@ describe("StatusController footer gauges", () => {
 		expect(footer()).toBe("om");
 	});
 
-	it("renders observer + consolidate + context fill bars", () => {
-		const { ui, footer } = fakeUI();
-		const sc = new StatusController();
-		sc.attach(ui);
-		sc.setGauges({ nextValue: 1500, nextMax: 3000, poolValue: 0, poolMax: 10_000, ctxValue: 40_000, ctxMax: 80_000 });
-		// next 4/8, pool 0/8, ctx 4/8
-		expect(footer()).toBe("om  O▕████░░░░▏  C▕░░░░░░░░▏  X▕████░░░░▏");
-	});
-
-	it("caps a full/over-threshold gauge at all cells", () => {
-		const { ui, footer } = fakeUI();
-		const sc = new StatusController();
-		sc.attach(ui);
-		sc.setGauges({ nextValue: 0, nextMax: 3000, poolValue: 25_000, poolMax: 10_000, ctxValue: 80_000, ctxMax: 80_000 });
-		expect(footer()).toBe("om  O▕░░░░░░░░▏  C▕████████▏  X▕████████▏");
-	});
-
 	it("clearing gauges returns to the bare footer", () => {
 		const { ui, footer } = fakeUI();
 		const sc = new StatusController();

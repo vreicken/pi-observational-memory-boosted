@@ -69,12 +69,28 @@ Each worker is an **ordinary recorded pi session** in the global store
 exact input chunk, tool calls, and output. Transient handoff files live in
 `<project>/.memory/.runs/`.
 
+### Cost tracking
+
+Every worker is a `pi` subprocess, so its spend is captured from pi's **built-in**
+`usage.cost.total` (reliable, already computed). The worker extension — *not* the model —
+accumulates that figure and hands it back via the run's cost file
+(`.memory/.runs/<runId>.cost.json`), alongside the existing observation IPC. The orchestrator
+folds each run into an `om.cost` ledger entry.
+
+- **Ephemeral-safe:** cost rides the result-file IPC, never a saved session log, so it works
+  even if a worker session is not persisted.
+- **Never rolls back:** the running total sums *all* `om.cost` entries across the whole
+  session (every branch), so real money spent does not decrease under `/tree` — the same
+  tier rule as the `.memory/` files.
+- **Surfaced** in the footer (`$0.000`, right of the gauges) and in `/om:status`
+  (`session cost: $X (N runs)`). Survives resume.
+
 ## Commands
 
 | Command | Effect |
 |---|---|
 | `/om`, `/om on`, `/om off` | The per-session on/off gate |
-| `/om:status` | Workers in flight, active observation count, next-observer progress, pool/consolidator state, topic-file count, journey size, context usage, last error |
+| `/om:status` | Workers in flight, active observation count, next-observer progress, pool/consolidator state, topic-file count, journey size, context usage, **session cost**, last error |
 | `/om:compact` | Force a compaction now (ignores the threshold) |
 | `/om:consolidate` | Force a consolidation now (ignores the pool threshold) |
 

@@ -8,23 +8,41 @@ import {
 	rawTokensAfterIndex,
 	selectSourceSlice,
 	serializeSourceAddressedBranchEntries,
+	OM_COST,
 	OM_OBSERVATIONS_RECORDED,
 	type Entry,
 	type SourceSlice,
 } from "../ledger/index.js";
 import type { Runtime } from "../runtime.js";
 import { buildWorkerArgv, buildWorkerEnv, spawnWorker } from "../spawn/launch.js";
-import { readObserverResult, runResultPath } from "../spawn/runs.js";
+import { readObserverResult, readWorkerCost, runCostPath, runResultPath } from "../spawn/runs.js";
 
 type TriggerCtx = {
 	cwd: string;
 	hasUI: boolean;
 	ui?: { notify: (message: string, level?: "info" | "warning" | "error") => void };
-	sessionManager: { getBranch: () => Entry[] };
+	sessionManager: { getBranch: () => Entry[]; getEntries: () => Entry[] };
 	getContextUsage?: () => { tokens: number | null } | undefined;
 };
 
 let runCounter = 0;
+
+/**
+ * Record a finished worker's cost from pi's built-in metrics (best-effort, even on failure).
+ * Appended as an om.cost ledger entry; summed across the whole session so it never rolls back.
+ */
+export function recordWorkerCost(
+	pi: ExtensionAPI,
+	runtime: Runtime,
+	ctx: { cwd: string; sessionManager: { getEntries: () => Entry[] } },
+	role: "observer" | "consolidator",
+	runId: string,
+): void {
+	const cost = readWorkerCost(runCostPath(ctx.cwd, runId));
+	if (!cost) return;
+	pi.appendEntry(OM_COST, { costUsd: cost.costUsd, role, runId });
+	runtime.refreshCost(ctx.sessionManager.getEntries());
+}
 
 function nextRunId(): string {
 	runCounter += 1;
@@ -135,6 +153,8 @@ async function dispatchObserver(
 		});
 		const env = buildWorkerEnv("observer", { cwd: ctx.cwd, runId });
 		const exit = await spawnWorker({ argv, cwd: ctx.cwd, env, signal: controller.signal });
+		// Capture cost before the exit-code check so a partial run's spend is still recorded.
+		recordWorkerCost(pi, runtime, ctx, "observer", runId);
 		if (exit.code !== 0) {
 			throw new Error(`observer exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr.trim().slice(0, 200)}` : ""}`);
 		}

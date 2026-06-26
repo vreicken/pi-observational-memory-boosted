@@ -1,5 +1,5 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
-import { foldLedger, poolTokens, rawTokensSinceObservationCoverage, type Entry } from "./ledger/index.js";
+import { foldLedger, poolTokens, rawTokensSinceObservationCoverage, sumSessionCost, type Entry } from "./ledger/index.js";
 import { StatusController } from "./ui/status-controller.js";
 
 /**
@@ -116,6 +116,16 @@ export class Runtime {
 			ctxValue: contextTokens ?? 0,
 			ctxMax: this.config.compactAtContextTokens,
 		});
+	}
+
+	/**
+	 * Recompute accumulated session cost for the footer from ALL entries (every branch), so the
+	 * displayed spend never rolls back under /tree. Pass `getEntries()`, not `getBranch()`.
+	 */
+	refreshCost(allEntries: Entry[]): void {
+		if (!this.enabled) return;
+		const { costUsd, runs } = sumSessionCost(allEntries);
+		this.status.setCost(costUsd, runs);
 	}
 
 	/** Abort and forget all in-flight workers (session shutdown / disable). */

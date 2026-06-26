@@ -14,6 +14,7 @@
  * (decision 11). The system prompt carries role + rules only.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { trackWorkerCost } from "./cost.js";
 import { CONSOLIDATOR_SYSTEM } from "./consolidator/prompt.js";
 import { registerConsolidatorTools } from "./consolidator/tools.js";
 import { OBSERVER_SYSTEM } from "./observer/prompt.js";
@@ -22,6 +23,10 @@ import { registerObserverTool } from "./observer/tool.js";
 export default function omWorker(pi: ExtensionAPI): void {
 	const role = process.env.OM_WORKER;
 	const resultPath = process.env.OM_RESULT_PATH;
+
+	// Shared across roles: pull pi's built-in cost and hand it back via the cost file.
+	// Registered first so it writes the cost file before each role's agent_end shutdown.
+	trackWorkerCost(pi);
 
 	if (role === "observer") {
 		if (!resultPath) throw new Error("OM_RESULT_PATH not set for observer worker");

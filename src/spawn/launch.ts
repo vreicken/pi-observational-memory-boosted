@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import type { ConfiguredModel } from "../config.js";
 import { memoryDir } from "../memory/paths.js";
-import { runResultPath } from "./runs.js";
+import { runCostPath, runResultPath } from "./runs.js";
 
 /** Repo root = two levels up from src/spawn/. The shared agent extension lives at agent/index.ts. */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -114,6 +114,8 @@ export function buildWorkerEnv(role: "observer" | "consolidator", opts: Observer
 		OM_WORKER: role,
 		OM_RUN_ID: opts.runId,
 		OM_RESULT_PATH: runResultPath(opts.cwd, opts.runId),
+		// Per-run cost handoff: the worker extension writes pi's built-in usage.cost.total here.
+		OM_COST_PATH: runCostPath(opts.cwd, opts.runId),
 		// Sandbox root for the consolidator's scoped file tools (design risk 6).
 		OM_MEMORY_DIR: memoryDir(opts.cwd),
 	};

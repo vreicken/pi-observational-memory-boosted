@@ -62,6 +62,7 @@ export class StatusController {
 	private readonly workers = new Map<string, WorkerEntry>();
 	private spinnerTimer: ReturnType<typeof setInterval> | undefined;
 	private gauges: FooterGauges | undefined;
+	private cost: { costUsd: number; runs: number } | undefined;
 	private readonly spinnerIntervalMs: number;
 	private readonly settleMs: number;
 
@@ -82,6 +83,7 @@ export class StatusController {
 		}
 		this.workers.clear();
 		this.gauges = undefined;
+		this.cost = undefined;
 		this.ui?.setWidget(WORKERS_WIDGET_KEY, undefined);
 		if (this.ui) this.ui.setStatus(FOOTER_KEY, undefined);
 		this.ui = undefined;
@@ -90,6 +92,12 @@ export class StatusController {
 	/** Update (or clear) the live footer gauges and re-render the footer in place. */
 	setGauges(gauges: FooterGauges | undefined): void {
 		this.gauges = gauges;
+		if (this.ui) this.ui.setStatus(FOOTER_KEY, this.renderFooter());
+	}
+
+	/** Update the accumulated session cost shown in the footer and re-render in place. */
+	setCost(costUsd: number, runs: number): void {
+		this.cost = { costUsd, runs };
 		if (this.ui) this.ui.setStatus(FOOTER_KEY, this.renderFooter());
 	}
 
@@ -174,7 +182,8 @@ export class StatusController {
 		const next = `${theme.fg("success", "O")}${this.gaugeBar(g.nextValue, g.nextMax)}`;
 		const pool = `${theme.fg("success", "C")}${this.gaugeBar(g.poolValue, g.poolMax)}`;
 		const ctx = `${theme.fg("success", "X")}${this.gaugeBar(g.ctxValue, g.ctxMax)}`;
-		return `${next}  ${pool}  ${ctx}`;
+		const cost = this.cost ? ` ${theme.fg("dim", `$${this.cost.costUsd.toFixed(3)}`)}` : "";
+		return `${next}  ${pool}  ${ctx}${cost}`;
 	}
 
 	/**

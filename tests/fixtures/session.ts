@@ -22,6 +22,7 @@ export type TestObservation = {
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
 export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
 export const OM_FOLDED = "om.folded";
+export const OM_COST = "om.cost";
 
 const DEFAULT_TIMESTAMP = "2026-05-02T10:00:00.000Z";
 
@@ -160,6 +161,23 @@ export function observationsDroppedEntry(
 		timestamp: DEFAULT_TIMESTAMP,
 		customType: OM_OBSERVATIONS_DROPPED,
 		data: args,
+		...overrides,
+	};
+}
+
+export function costEntry(
+	id: string,
+	costUsd: number,
+	role: "observer" | "consolidator" = "observer",
+	overrides: Partial<TestEntry> = {},
+): TestEntry {
+	return {
+		type: "custom",
+		id,
+		parentId: null,
+		timestamp: DEFAULT_TIMESTAMP,
+		customType: OM_COST,
+		data: { costUsd, role, runId: id },
 		...overrides,
 	};
 }

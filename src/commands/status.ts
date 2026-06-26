@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { foldLedger, poolTokens, rawTokensSinceObservationCoverage, type Entry } from "../ledger/index.js";
+import { foldLedger, poolTokens, rawTokensSinceObservationCoverage, sumSessionCost, type Entry } from "../ledger/index.js";
 import { listTopics, readJourney } from "../memory/paths.js";
 import { estimateStringTokens } from "../tokens.js";
 import type { Runtime } from "../runtime.js";
@@ -22,6 +22,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const pool = poolTokens(folded.activeObservations);
 			const topicCount = listTopics(ctx.cwd).length;
 			const journey = readJourney(ctx.cwd);
+			const { costUsd, runs } = sumSessionCost(ctx.sessionManager.getEntries() as Entry[]);
 
 			const lines = [
 				`om status`,
@@ -34,6 +35,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`  topic files: ${topicCount}`,
 				`  journey: ${journey ? `~${estimateStringTokens(journey).toLocaleString()} / ${runtime.config.journeyTargetTokens.toLocaleString()} tok` : "none yet"}`,
 				`  context: ${contextTokens != null ? contextTokens.toLocaleString() : "?"} / ${runtime.config.compactAtContextTokens.toLocaleString()} tok`,
+				`  session cost: $${costUsd.toFixed(4)} (${runs} run${runs === 1 ? "" : "s"})`,
 				runtime.lastWorkerError ? `  last error: ${runtime.lastWorkerError}` : `  last error: none`,
 				"",
 				renderTimeline(branch, runtime.config),

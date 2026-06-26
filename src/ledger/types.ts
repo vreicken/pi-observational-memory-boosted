@@ -16,6 +16,12 @@ export const OM_FOLDED = "om.folded";
 /** Per-session on/off gate state (default OFF). See src/index.ts. */
 export const OM_ENABLED = "om.enabled";
 /**
+ * Per-worker cost record (one per finished worker run). The orchestrator appends these from
+ * pi's built-in `usage.cost.total`, reported back by the worker extension via the cost file.
+ * Summed across the WHOLE session (every branch), so spend never rolls back under /tree.
+ */
+export const OM_COST = "om.cost";
+/**
  * Synthetic continuation message used to resume the agent loop after a mid-run compaction
  * (a `turn_end` that was NOT the run's terminal turn). Carried as a `role: "custom"` message
  * with `display: false` so it is hidden from the human TUI; pi still surfaces it to the model
@@ -58,6 +64,12 @@ export type ObservationsRecordedEntryData = {
 export type ObservationsDroppedEntryData = {
 	observationTimestamps: string[];
 	coversUpToId: string;
+};
+
+export type CostEntryData = {
+	costUsd: number;
+	role: "observer" | "consolidator";
+	runId: string;
 };
 
 /** Stamped into the compaction entry's `details` so a future visible projection can read it back. */
@@ -126,6 +138,33 @@ export function isObservationsRecordedEntry(entry: Entry): entry is Entry & {
 	data: ObservationsRecordedEntryData;
 } {
 	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_RECORDED && isObservationsRecordedData(entry.data);
+}
+
+export function isCostEntry(entry: Entry): entry is Entry & {
+	type: "custom";
+	customType: typeof OM_COST;
+	data: CostEntryData;
+} {
+	if (entry.type !== "custom" || entry.customType !== OM_COST) return false;
+	const data = entry.data as Record<string, unknown> | undefined;
+	return !!data && typeof data.costUsd === "number" && Number.isFinite(data.costUsd as number) && (data.costUsd as number) >= 0;
+}
+
+/**
+ * Sum every `om.cost` entry across the WHOLE session. Callers MUST pass all entries
+ * (`getEntries()`), NOT a single branch (`getBranch()`): counting every branch is what makes
+ * real spend monotonic — it never decreases when /tree navigates onto another branch.
+ */
+export function sumSessionCost(allEntries: Entry[]): { costUsd: number; runs: number } {
+	let costUsd = 0;
+	let runs = 0;
+	for (const entry of allEntries) {
+		if (isCostEntry(entry)) {
+			costUsd += (entry.data as CostEntryData).costUsd;
+			runs += 1;
+		}
+	}
+	return { costUsd, runs };
 }
 
 export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {

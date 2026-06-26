@@ -29,6 +29,36 @@ export function runResultPath(cwd: string, runId: string): string {
 	return join(runsDir(cwd), `${runId}.result.json`);
 }
 
+/**
+ * Per-run cost handoff file. Written by the worker EXTENSION (never the model) from pi's
+ * built-in `usage.cost.total`, read by the orchestrator after the process exits. Uniform
+ * across roles — the consolidator has no observations result file but still reports cost here.
+ */
+export function runCostPath(cwd: string, runId: string): string {
+	return join(runsDir(cwd), `${runId}.cost.json`);
+}
+
+export type WorkerCostResult = {
+	costUsd: number;
+};
+
+export function writeWorkerCost(path: string, cost: WorkerCostResult): void {
+	atomicWrite(path, JSON.stringify(cost));
+}
+
+/** Best-effort read of a worker cost file; returns undefined on missing/malformed input. */
+export function readWorkerCost(path: string): WorkerCostResult | undefined {
+	try {
+		const raw = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+		if (!raw || typeof raw !== "object") return undefined;
+		const cost = (raw as { costUsd?: unknown }).costUsd;
+		if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) return undefined;
+		return { costUsd: cost };
+	} catch {
+		return undefined;
+	}
+}
+
 /** Atomic write (temp + rename) so a reader never sees a half-written file. */
 export function atomicWrite(path: string, content: string): void {
 	mkdirSync(dirname(path), { recursive: true });
