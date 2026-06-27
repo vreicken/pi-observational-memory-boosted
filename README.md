@@ -4,8 +4,8 @@ Tiered, subprocess-backed memory for pi. Parallel **observers** distill raw conv
 chunks into atomic observations committed to the master's branch-local **ledger** (so memory
 stays correct under `/tree`); a deterministic, model-free **compaction** renders that buffer
 verbatim into the compaction block. A **consolidator** promotes the oldest observations into
-durable `.memory/` topic files, bounding the buffer and giving the project cross-session,
-`grep`-able long-term memory.
+durable `.memory/<sessionId>/` topic files, bounding the buffer and giving each session its
+own durable, `grep`-able long-term memory (a fork seeds its memory from its parent).
 
 See `PLAN.md` for the implementation plan and the design doc it derives from.
 
@@ -32,8 +32,8 @@ raw chunks ─[parallel observers]─▶ observations ──▶ master ledger �
                                           │
                           oldest overflow │ (pool > consolidateAtPoolTokens)
                                           ▼
-                                   [consolidator] ──▶ .memory/<topic>.md  +  INDEX.md
-                                   (subprocess pi,     (durable, cross-session,
+                                   [consolidator] ──▶ .memory/<session>/<topic>.md + INDEX.md
+                                   (subprocess pi,     (durable, per-session,
                                     one at a time)      grep-able; tombstones drain buffer)
 ```
 
@@ -46,18 +46,21 @@ raw chunks ─[parallel observers]─▶ observations ──▶ master ledger �
   (the observer only emits minute resolution).
 - **Compaction** (`agent_end` over `compactAtContextTokens`, when idle): waits for in-flight
   observers, then renders the active buffer plus a **memory map** (rendered live from
-  `.memory/` topic front-matter) and a **journey** section (`.memory/JOURNEY.md`, read
+  `.memory/<session>/` topic front-matter) and a **journey** section (`.memory/<session>/JOURNEY.md`, read
   verbatim). The cutoff snaps to an observation chunk boundary so the verbatim tail is never
   double-represented.
 - **Consolidator clock** (`turn_end` / `agent_start`): when the active observation pool
   exceeds `consolidateAtPoolTokens`, a single background consolidator subprocess folds the
-  **oldest** observations (above `poolTargetTokens`) into durable `.memory/<topic>.md` files,
-  then the orchestrator tombstones exactly the observations it reports — draining the buffer
-  back toward target. Topic files track the repo, not the session branch: they are **not**
-  rolled back by `/tree`. The orchestrator owns `INDEX.md` and re-renders it from topic
-  front-matter after each run; the consolidator touches `<topic>.md` files plus `JOURNEY.md`,
-  via its own `read`/`write`/`edit`/`ls`/`grep` tools scoped to `.memory/`.
-- **Journey** (`.memory/JOURNEY.md`): a single, whole-project, purely **descriptive** prose
+  **oldest** observations (above `poolTargetTokens`) into durable `.memory/<session>/<topic>.md`
+  files, then the orchestrator tombstones exactly the observations it reports — draining the
+  buffer back toward target. Topic files are **scoped per session** (`.memory/<sessionId>/`,
+  keyed by the immutable session-header id, so two sessions in the same project never share
+  output) and track the session, not the branch: they are **not** rolled back by `/tree`. On a
+  fork/clone the new session's memory is **seeded once** from the parent (matching the ledger,
+  which already travels with the fork). The orchestrator owns `INDEX.md` and re-renders it from
+  topic front-matter after each run; the consolidator touches `<topic>.md` files plus
+  `JOURNEY.md`, via its own `read`/`write`/`edit`/`ls`/`grep` tools scoped to the session dir.
+- **Journey** (`.memory/<session>/JOURNEY.md`): a single, whole-project, purely **descriptive** prose
   history of how the work got to its current state, maintained by the consolidator and pushed
   into every compaction block for **orientation** (not recall, not instructions). It is
   append-mostly: each consolidation adds a short dated segment and compresses the oldest
@@ -67,14 +70,14 @@ raw chunks ─[parallel observers]─▶ observations ──▶ master ledger �
 Each worker is an **ordinary recorded pi session** in the global store
 (`~/.pi/agent/sessions`, under the project path) — open it in the session browser to see the
 exact input chunk, tool calls, and output. Transient handoff files live in
-`<project>/.memory/.runs/`.
+`<project>/.memory/<sessionId>/.runs/`.
 
 ### Cost tracking
 
 Every worker is a `pi` subprocess, so its spend is captured from pi's **built-in**
 `usage.cost.total` (reliable, already computed). The worker extension — *not* the model —
 accumulates that figure and hands it back via the run's cost file
-(`.memory/.runs/<runId>.cost.json`), alongside the existing observation IPC. The orchestrator
+(`.memory/<session>/.runs/<runId>.cost.json`), alongside the existing observation IPC. The orchestrator
 folds each run into an `om.cost` ledger entry.
 
 - **Ephemeral-safe:** cost rides the result-file IPC, never a saved session log, so it works
@@ -133,5 +136,7 @@ npm run typecheck # tsc --noEmit
 
 Layout: `src/` is the master-side orchestrator (entry `src/index.ts`); `agent/` is the shared
 worker extension loaded into subprocesses via `-e` (`OM_WORKER=observer|consolidator`).
-Long-term memory lives under `<project>/.memory/` (`INDEX.md` + `<topic>.md`); transient
-worker IPC under `<project>/.memory/.runs/`.
+Long-term memory lives under `<project>/.memory/<sessionId>/` (`INDEX.md` + `<topic>.md` +
+`JOURNEY.md`), keyed by the immutable session-header id so sessions in the same project stay
+isolated; a fork seeds its dir from the parent's on first touch. Transient worker IPC lives
+under `<project>/.memory/<sessionId>/.runs/`.

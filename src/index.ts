@@ -18,6 +18,7 @@ import { registerCompactionTrigger } from "./hooks/compaction-trigger.js";
 import { registerConsolidatorTrigger } from "./hooks/consolidator-trigger.js";
 import { registerObserverTrigger } from "./hooks/observer-trigger.js";
 import { OM_ENABLED, type Entry } from "./ledger/index.js";
+import { ensureSessionMemory } from "./memory/session.js";
 import { Runtime } from "./runtime.js";
 
 function readGateFromLedger(branch: Entry[]): boolean {
@@ -46,6 +47,7 @@ export default function observationalMemory(pi: ExtensionAPI): void {
 		runtime.dispatchedCoversUpToId = undefined;
 		const branch = ctx.sessionManager.getBranch() as Entry[];
 		runtime.enabled = readGateFromLedger(branch);
+		if (runtime.enabled) runtime.memoryRoot = ensureSessionMemory(ctx);
 		attachIfEnabled(ctx);
 		runtime.refreshFooterGauges(branch, ctx.getContextUsage?.()?.tokens ?? null);
 		runtime.refreshCost(ctx.sessionManager.getEntries() as Entry[]);
@@ -68,6 +70,7 @@ export default function observationalMemory(pi: ExtensionAPI): void {
 			runtime.enabled = next;
 			pi.appendEntry(OM_ENABLED, { enabled: next });
 			if (next) {
+				runtime.memoryRoot = ensureSessionMemory(ctx);
 				attachIfEnabled(ctx);
 				runtime.refreshFooterGauges(ctx.sessionManager.getBranch() as Entry[], ctx.getContextUsage?.()?.tokens ?? null);
 				runtime.refreshCost(ctx.sessionManager.getEntries() as Entry[]);

@@ -28,3 +28,5 @@ coverage/
 # Logs
 *.log
 npm-debug.log*
+
+.memory/

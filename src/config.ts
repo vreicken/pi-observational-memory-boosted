@@ -57,8 +57,8 @@ export const DEFAULTS: Config = {
 	observerConcurrency: 4,
 	resumeAfterMidRunCompaction: true,
 	models: {
-		observer: { provider: "anthropic", id: "claude-sonnet-4-6", thinking: "low" },
-		consolidator: { provider: "anthropic", id: "claude-sonnet-4-6", thinking: "medium" },
+		observer: { provider: "openrouter", id: "z-ai/glm-5.2", thinking: "low" },
+		consolidator: { provider: "openrouter", id: "z-ai/glm-5.2", thinking: "medium" },
 	},
 	passive: false,
 	debugLog: false,

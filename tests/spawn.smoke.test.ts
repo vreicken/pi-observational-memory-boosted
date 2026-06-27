@@ -35,16 +35,18 @@ describe("launch argv + env", () => {
 	});
 
 	it("sets the worker IPC env vars", () => {
-		const env = buildWorkerEnv("observer", { cwd: "/proj", runId: "r1" });
+		const memoryRoot = "/proj/.memory/sess-1";
+		const env = buildWorkerEnv("observer", { memoryRoot, runId: "r1" });
 		expect(env.OM_WORKER).toBe("observer");
 		expect(env.OM_RUN_ID).toBe("r1");
 		// Chunk travels as the `pi -p` prompt (recorded user message), not via env/file.
 		expect(env.OM_CHUNK_PATH).toBeUndefined();
-		expect(env.OM_RESULT_PATH).toBe(runResultPath("/proj", "r1"));
+		expect(env.OM_RESULT_PATH).toBe(runResultPath(memoryRoot, "r1"));
+		expect(env.OM_MEMORY_DIR).toBe(memoryRoot);
 	});
 
-	it("resolves run paths under .memory/.runs", () => {
-		expect(runsDir("/proj")).toBe("/proj/.memory/.runs");
+	it("resolves run paths under the session memory root's .runs", () => {
+		expect(runsDir("/proj/.memory/sess-1")).toBe("/proj/.memory/sess-1/.runs");
 	});
 });
 

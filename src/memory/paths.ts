@@ -21,21 +21,32 @@ export const INDEX_FILENAME = "INDEX.md";
  */
 export const JOURNEY_FILENAME = "JOURNEY.md";
 
-export function memoryDir(cwd: string): string {
+/** The project-level `.memory/` base. Per-session roots live one level below it. */
+export function memoryBaseDir(cwd: string): string {
 	return join(cwd, ".memory");
 }
 
-export function indexPath(cwd: string): string {
-	return join(memoryDir(cwd), INDEX_FILENAME);
+/**
+ * The per-session memory root: `.memory/<sessionId>/`. All durable long-term memory (INDEX,
+ * topic files, JOURNEY) and transient `.runs/` IPC are scoped under here so two sessions in the
+ * same project never share consolidator output. Keyed by the immutable session header id
+ * (survives /name, /resume, /tree) — NOT the session filename or display name.
+ */
+export function sessionMemoryRoot(cwd: string, sessionId: string): string {
+	return join(memoryBaseDir(cwd), sessionId);
 }
 
-export function journeyPath(cwd: string): string {
-	return join(memoryDir(cwd), JOURNEY_FILENAME);
+export function indexPath(root: string): string {
+	return join(root, INDEX_FILENAME);
+}
+
+export function journeyPath(root: string): string {
+	return join(root, JOURNEY_FILENAME);
 }
 
 /** Read `.memory/JOURNEY.md` body, trimmed. Returns undefined when missing or effectively empty. */
-export function readJourney(cwd: string): string | undefined {
-	const path = journeyPath(cwd);
+export function readJourney(root: string): string | undefined {
+	const path = journeyPath(root);
 	if (!existsSync(path)) return undefined;
 	try {
 		const body = readFileSync(path, "utf-8").trim();
@@ -58,12 +69,12 @@ export function atomicWrite(path: string, content: string): void {
  * absolute path, or undefined if it escapes the sandbox. The consolidator's scoped tools use
  * this to reject any path outside `.memory/` (design risk 6).
  */
-export function resolveWithinMemory(cwd: string, requestedPath: string): string | undefined {
-	const root = resolve(memoryDir(cwd));
-	const abs = resolve(root, requestedPath);
-	const rel = relative(root, abs);
-	if (rel === "" || rel === ".") return abs; // the .memory dir itself
-	if (rel.startsWith("..") || resolve(root, rel) !== abs) return undefined;
+export function resolveWithinMemory(root: string, requestedPath: string): string | undefined {
+	const base = resolve(root);
+	const abs = resolve(base, requestedPath);
+	const rel = relative(base, abs);
+	if (rel === "" || rel === ".") return abs; // the session memory root itself
+	if (rel.startsWith("..") || resolve(base, rel) !== abs) return undefined;
 	return abs;
 }
 
@@ -110,21 +121,25 @@ export function parseFrontMatter(content: string): { front: TopicFrontMatter; bo
 	return { front, body: content.slice(match[0].length) };
 }
 
-/** List parsed topic files (every `*.md` except INDEX.md), sorted by filename. */
-export function listTopics(cwd: string): Topic[] {
-	const dir = memoryDir(cwd);
-	if (!existsSync(dir)) return [];
+/**
+ * List parsed topic files (every `*.md` except INDEX.md/JOURNEY.md) under a session memory
+ * root, sorted by filename. Each topic's `path` is rendered relative to the project cwd (e.g.
+ * `.memory/<sessionId>/auth.md`) so the master can `read`/`grep` it directly from the map.
+ */
+export function listTopics(root: string): Topic[] {
+	if (!existsSync(root)) return [];
+	const cwd = resolve(root, "..", "..");
 	const topics: Topic[] = [];
-	for (const filename of readdirSync(dir)) {
+	for (const filename of readdirSync(root)) {
 		if (!filename.endsWith(".md") || filename === INDEX_FILENAME || filename === JOURNEY_FILENAME) continue;
 		let content: string;
 		try {
-			content = readFileSync(join(dir, filename), "utf-8");
+			content = readFileSync(join(root, filename), "utf-8");
 		} catch {
 			continue;
 		}
 		const { front } = parseFrontMatter(content);
-		topics.push({ ...front, path: join(".memory", filename), filename });
+		topics.push({ ...front, path: relative(cwd, join(root, filename)), filename });
 	}
 	topics.sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0));
 	return topics;

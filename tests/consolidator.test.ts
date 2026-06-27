@@ -8,10 +8,10 @@ import { buildWorkerEnv } from "../src/spawn/launch.js";
 
 describe("buildWorkerEnv(consolidator)", () => {
 	it("sets role, run id, and the .memory sandbox root", () => {
-		const env = buildWorkerEnv("consolidator", { cwd: "/proj", runId: "c1" });
+		const env = buildWorkerEnv("consolidator", { memoryRoot: "/proj/.memory/sess-1", runId: "c1" });
 		expect(env.OM_WORKER).toBe("consolidator");
 		expect(env.OM_RUN_ID).toBe("c1");
-		expect(env.OM_MEMORY_DIR).toBe("/proj/.memory");
+		expect(env.OM_MEMORY_DIR).toBe("/proj/.memory/sess-1");
 	});
 });
 

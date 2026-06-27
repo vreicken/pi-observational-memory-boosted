@@ -14,6 +14,13 @@ export class Runtime {
 	enabled = false;
 
 	/**
+	 * Absolute `.memory/<sessionId>/` root for this session's durable + transient memory. Set
+	 * whenever the gate is enabled (session_start / `/om on`) via `ensureSessionMemory`; empty
+	 * while disabled. All path helpers (listTopics/indexPath/readJourney/run*Path) take this root.
+	 */
+	memoryRoot = "";
+
+	/**
 	 * In-flight observer subprocesses, keyed by runId. `coversUpToId` is the source-entry id at
 	 * the END of the observer's chunk — it lets compaction decide whether the observer can affect
 	 * the rendered block (an observer whose chunk lands entirely in the verbatim tail is excluded

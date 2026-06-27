@@ -20,8 +20,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const sinceObservation = rawTokensSinceObservationCoverage(branch);
 			const contextTokens = ctx.getContextUsage?.()?.tokens ?? null;
 			const pool = poolTokens(folded.activeObservations);
-			const topicCount = listTopics(ctx.cwd).length;
-			const journey = readJourney(ctx.cwd);
+			const topicCount = listTopics(runtime.memoryRoot).length;
+			const journey = readJourney(runtime.memoryRoot);
 			const { costUsd, runs } = sumSessionCost(ctx.sessionManager.getEntries() as Entry[]);
 
 			const lines = [

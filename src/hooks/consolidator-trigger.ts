@@ -55,9 +55,9 @@ function nextRunId(): string {
  * overflow lines. The journey is included verbatim so the consolidator updates it in place
  * (append a segment for this batch; compress the old tail only if over `journeyTargetTokens`).
  */
-function buildConsolidatorPrompt(cwd: string, promote: Observation[], journeyTargetTokens: number): string {
-	const indexText = renderIndexFile(listTopics(cwd));
-	const journeyText = readJourney(cwd);
+function buildConsolidatorPrompt(memoryRoot: string, promote: Observation[], journeyTargetTokens: number): string {
+	const indexText = renderIndexFile(listTopics(memoryRoot));
+	const journeyText = readJourney(memoryRoot);
 	const journeyWords = Math.round((journeyTargetTokens * 3) / 4);
 	const obsLines = sortObservations(promote).map(observationToLine).join("\n");
 	return (
@@ -111,13 +111,13 @@ async function dispatchConsolidator(
 	runtime.status.workerStart("consolidator", runId);
 
 	try {
-		const prompt = buildConsolidatorPrompt(ctx.cwd, promote, runtime.config.journeyTargetTokens);
+		const prompt = buildConsolidatorPrompt(runtime.memoryRoot, promote, runtime.config.journeyTargetTokens);
 		const argv = buildWorkerArgv({
 			model: runtime.config.models.consolidator,
 			sessionName: `om-consolidator-${runId}`,
 			kickoffPrompt: prompt,
 		});
-		const env = buildWorkerEnv("consolidator", { cwd: ctx.cwd, runId });
+		const env = buildWorkerEnv("consolidator", { memoryRoot: runtime.memoryRoot, runId });
 		const exit = await spawnWorker({ argv, cwd: ctx.cwd, env, signal: controller.signal });
 		// Capture cost before the exit-code check so a partial run's spend is still recorded.
 		recordWorkerCost(pi, runtime, ctx, "consolidator", runId);
@@ -140,7 +140,7 @@ async function dispatchConsolidator(
 		}
 
 		// Re-render INDEX.md so live ls/grep truth leads the pushed map (design risk 3).
-		atomicWrite(indexPath(ctx.cwd), renderIndexFile(listTopics(ctx.cwd)));
+		atomicWrite(indexPath(runtime.memoryRoot), renderIndexFile(listTopics(runtime.memoryRoot)));
 
 		runtime.status.workerDone(runId, toDrop.length);
 		runtime.refreshFooterGauges(ctx.sessionManager.getBranch(), ctx.getContextUsage?.()?.tokens ?? null);

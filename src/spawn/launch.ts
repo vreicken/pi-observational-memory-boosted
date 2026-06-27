@@ -11,7 +11,6 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import type { ConfiguredModel } from "../config.js";
-import { memoryDir } from "../memory/paths.js";
 import { runCostPath, runResultPath } from "./runs.js";
 
 /** Repo root = two levels up from src/spawn/. The shared agent extension lives at agent/index.ts. */
@@ -99,7 +98,8 @@ export function spawnWorker(opts: {
 }
 
 export type ObserverLaunchEnv = {
-	cwd: string;
+	/** Absolute `.memory/<sessionId>/` root — IPC files and the consolidator sandbox live here. */
+	memoryRoot: string;
 	runId: string;
 };
 
@@ -113,10 +113,10 @@ export function buildWorkerEnv(role: "observer" | "consolidator", opts: Observer
 		...process.env,
 		OM_WORKER: role,
 		OM_RUN_ID: opts.runId,
-		OM_RESULT_PATH: runResultPath(opts.cwd, opts.runId),
+		OM_RESULT_PATH: runResultPath(opts.memoryRoot, opts.runId),
 		// Per-run cost handoff: the worker extension writes pi's built-in usage.cost.total here.
-		OM_COST_PATH: runCostPath(opts.cwd, opts.runId),
+		OM_COST_PATH: runCostPath(opts.memoryRoot, opts.runId),
 		// Sandbox root for the consolidator's scoped file tools (design risk 6).
-		OM_MEMORY_DIR: memoryDir(opts.cwd),
+		OM_MEMORY_DIR: opts.memoryRoot,
 	};
 }

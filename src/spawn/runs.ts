@@ -21,12 +21,12 @@ export type ObserverRunResult = {
 	observations: RawObservation[];
 };
 
-export function runsDir(cwd: string): string {
-	return join(cwd, ".memory", ".runs");
+export function runsDir(root: string): string {
+	return join(root, ".runs");
 }
 
-export function runResultPath(cwd: string, runId: string): string {
-	return join(runsDir(cwd), `${runId}.result.json`);
+export function runResultPath(root: string, runId: string): string {
+	return join(runsDir(root), `${runId}.result.json`);
 }
 
 /**
@@ -34,8 +34,8 @@ export function runResultPath(cwd: string, runId: string): string {
  * built-in `usage.cost.total`, read by the orchestrator after the process exits. Uniform
  * across roles — the consolidator has no observations result file but still reports cost here.
  */
-export function runCostPath(cwd: string, runId: string): string {
-	return join(runsDir(cwd), `${runId}.cost.json`);
+export function runCostPath(root: string, runId: string): string {
+	return join(runsDir(root), `${runId}.cost.json`);
 }
 
 export type WorkerCostResult = {

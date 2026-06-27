@@ -150,8 +150,8 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			// Phase B: render the long-term tier live from disk, regenerated each compaction
 			// (throwaway projections — cannot decay). The journey is the running descriptive history
 			// the consolidator maintains; the map is the topic-file index.
-			const journey = readJourney(ctx.cwd);
-			const map = renderMemoryMap(listTopics(ctx.cwd));
+			const journey = readJourney(runtime.memoryRoot);
+			const map = renderMemoryMap(listTopics(runtime.memoryRoot));
 			const summary = renderSummary(journey, map, projection.observations);
 
 			return {
