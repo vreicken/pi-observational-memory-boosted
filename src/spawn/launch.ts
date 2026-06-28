@@ -7,7 +7,7 @@
  * project path in `~/.pi/agent/sessions` and is openable in the session browser.
  */
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import type { ConfiguredModel } from "../config.js";
@@ -63,7 +63,13 @@ export function buildWorkerArgv(opts: {
 
 export type WorkerExit = { code: number | null; signal: NodeJS.Signals | null; stderr: string };
 
-/** Spawn a headless worker; resolve when it exits. cwd is the master's cwd (global store). */
+/**
+ * Spawn a headless worker; resolve when it exits. Workers run in their master session's
+ * `.memory/<sessionId>/` root (not the project cwd) so pi keys the run into a distinct global
+ * session bucket and it never clutters the project's `/resume` picker. The root is ensured to
+ * exist before spawn — `spawn()` would ENOENT otherwise (the memory root is created lazily on
+ * first durable write when there is no parent to seed).
+ */
 export function spawnWorker(opts: {
 	argv: string[];
 	cwd: string;
@@ -71,6 +77,7 @@ export function spawnWorker(opts: {
 	signal?: AbortSignal;
 }): Promise<WorkerExit> {
 	const [command, ...rest] = opts.argv;
+	mkdirSync(opts.cwd, { recursive: true });
 	return new Promise<WorkerExit>((resolvePromise) => {
 		const proc = spawn(command, rest, {
 			cwd: opts.cwd,

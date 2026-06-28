@@ -35,7 +35,6 @@ import { buildWorkerArgv, buildWorkerEnv, spawnWorker } from "../spawn/launch.js
 import { recordWorkerCost } from "./observer-trigger.js";
 
 type TriggerCtx = {
-	cwd: string;
 	hasUI: boolean;
 	ui?: { notify: (message: string, level?: "info" | "warning" | "error") => void };
 	sessionManager: { getBranch: () => Entry[]; getEntries: () => Entry[] };
@@ -118,7 +117,7 @@ async function dispatchConsolidator(
 			kickoffPrompt: prompt,
 		});
 		const env = buildWorkerEnv("consolidator", { memoryRoot: runtime.memoryRoot, runId });
-		const exit = await spawnWorker({ argv, cwd: ctx.cwd, env, signal: controller.signal });
+		const exit = await spawnWorker({ argv, cwd: runtime.memoryRoot, env, signal: controller.signal });
 		// Capture cost before the exit-code check so a partial run's spend is still recorded.
 		recordWorkerCost(pi, runtime, ctx, "consolidator", runId);
 		if (exit.code !== 0) {

@@ -18,7 +18,6 @@ import { buildWorkerArgv, buildWorkerEnv, spawnWorker } from "../spawn/launch.js
 import { readObserverResult, readWorkerCost, runCostPath, runResultPath } from "../spawn/runs.js";
 
 type TriggerCtx = {
-	cwd: string;
 	hasUI: boolean;
 	ui?: { notify: (message: string, level?: "info" | "warning" | "error") => void };
 	sessionManager: { getBranch: () => Entry[]; getEntries: () => Entry[] };
@@ -34,7 +33,7 @@ let runCounter = 0;
 export function recordWorkerCost(
 	pi: ExtensionAPI,
 	runtime: Runtime,
-	ctx: { cwd: string; sessionManager: { getEntries: () => Entry[] } },
+	ctx: { sessionManager: { getEntries: () => Entry[] } },
 	role: "observer" | "consolidator",
 	runId: string,
 ): void {
@@ -73,7 +72,6 @@ function effectiveWatermarkId(runtime: Runtime, branch: Entry[]): string | undef
 export function evaluateObserverTriggers(pi: ExtensionAPI, runtime: Runtime, ctx: TriggerCtx): void {
 	if (!runtime.enabled || runtime.config.passive) return;
 
-	const cwd = ctx.cwd;
 	const hasUI = ctx.hasUI;
 	const ui = ctx.ui;
 	const sessionManager = ctx.sessionManager;
@@ -97,7 +95,7 @@ export function evaluateObserverTriggers(pi: ExtensionAPI, runtime: Runtime, ctx
 
 		runtime.dispatchedCoversUpToId = slice.coversUpToId;
 		runtime.trackObserverTask(
-			dispatchObserver(pi, runtime, { cwd, hasUI, ui, sessionManager, getContextUsage: ctx.getContextUsage }, slice),
+			dispatchObserver(pi, runtime, { hasUI, ui, sessionManager, getContextUsage: ctx.getContextUsage }, slice),
 		);
 		if (hasUI) startToastLines.push(`om: observer started (~${slice.tokens.toLocaleString()} tok)`);
 	}
@@ -152,7 +150,7 @@ async function dispatchObserver(
 			kickoffPrompt: userText,
 		});
 		const env = buildWorkerEnv("observer", { memoryRoot: runtime.memoryRoot, runId });
-		const exit = await spawnWorker({ argv, cwd: ctx.cwd, env, signal: controller.signal });
+		const exit = await spawnWorker({ argv, cwd: runtime.memoryRoot, env, signal: controller.signal });
 		// Capture cost before the exit-code check so a partial run's spend is still recorded.
 		recordWorkerCost(pi, runtime, ctx, "observer", runId);
 		if (exit.code !== 0) {
