@@ -1,16 +1,8 @@
 # observational-memory
 
-Tiered, subprocess-backed memory for pi. Parallel **observers** distill raw conversation
-chunks into atomic observations committed to the master's branch-local **ledger** (so memory
-stays correct under `/tree`); a deterministic, model-free **compaction** renders that buffer
-verbatim into the compaction block. A **consolidator** promotes the oldest observations into
-durable `.memory/<sessionId>/` topic files, bounding the buffer and giving each session its
-own durable, `grep`-able long-term memory (a fork seeds its memory from its parent).
+Tiered, subprocess-backed memory for pi.
 
-See `PLAN.md` for the implementation plan and the design doc it derives from.
-
-> **Status: Phase A + B.** Short-term tier (observers → ledger → compaction) and long-term
-> tier (consolidator → `.memory/` topic files) are both implemented, with full TUI.
+Parallel **observers** distill raw conversation chunks into atomic observations committed to the master's branch-local **ledger** (so memory stays correct under `/tree`); a deterministic, model-free **compaction** renders that buffer verbatim into the compaction block. A **consolidator** promotes the oldest observations into durable `.memory/<sessionId>/` topic files, bounding the buffer and giving each session its own durable, `grep`-able long-term memory (a fork seeds its memory from its parent).
 
 ## On/off gate (default OFF)
 
@@ -25,17 +17,22 @@ trigger, hook, widget, and subprocess returns immediately.
 
 ## How it works
 
+```mermaid
+flowchart LR
+    A["raw chunks<br/><i>token-bounded, fixed slices</i>"]
+    B["parallel observers<br/><i>subprocess pi, headless</i>"]
+    C["observations<br/><i>{timestamp, content}</i>"]
+    D["master ledger<br/><i>branch-local, /tree-correct</i>"]
+    E["compaction block<br/><i>deterministic, model-free</i>"]
+    F["consolidator<br/><i>subprocess pi, one at a time</i>"]
+    G[".memory/&lt;session&gt;/&lt;topic&gt;.md + INDEX.md<br/><i>durable, per-session, grep-able;<br/>tombstones drain buffer</i>"]
+
+    A --> B --> C --> D --> E
+    D -- "oldest overflow<br/>(pool > consolidateAtPoolTokens)" --> F --> G
 ```
-raw chunks ─[parallel observers]─▶ observations ──▶ master ledger ──▶ compaction block
- (token-bounded,  (subprocess pi,    {timestamp,        (branch-local,   (deterministic,
-  fixed slices)    headless)          content}           /tree-correct)   model-free)
-                                          │
-                          oldest overflow │ (pool > consolidateAtPoolTokens)
-                                          ▼
-                                   [consolidator] ──▶ .memory/<session>/<topic>.md + INDEX.md
-                                   (subprocess pi,     (durable, per-session,
-                                    one at a time)      grep-able; tombstones drain buffer)
-```
+
+Pipeline: raw chunks → observers → observations → ledger → compaction block, with a
+consolidator draining the oldest observations into durable per-session memory files.
 
 - **Observer clock** (`turn_end` / `agent_start`): every `chunkTokens` of new raw history,
   cut a fixed-token slice and fire an observer subprocess. Observers are embarrassingly
