@@ -1,5 +1,7 @@
 # observational-memory
 
+Original system created by @amosblomqvist (Eero Alvar)
+
 Tiered, subprocess-backed memory for pi.
 
 Parallel **observers** distill raw conversation chunks into atomic observations committed to the master's branch-local **ledger** (so memory stays correct under `/tree`); a deterministic, model-free **compaction** renders that buffer verbatim into the compaction block. A **consolidator** promotes the oldest observations into durable `.memory/<sessionId>/` topic files, bounding the buffer and giving each session its own durable, `grep`-able long-term memory (a fork seeds its memory from its parent).
