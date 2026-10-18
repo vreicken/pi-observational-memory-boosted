@@ -2,6 +2,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+
+/** Shoehorned: pi's ToolDefinition.execute takes 5 params; tests invoke the 2 used ones. */
+type ToolExec = { execute(toolCallId: string, params: unknown): Promise<{ content: Array<{ text?: string }> }> };
 
 import { registerConsolidatorTools } from "../agent/consolidator/tools.js";
 import { buildWorkerEnv } from "../src/spawn/launch.js";
@@ -18,13 +22,13 @@ describe("buildWorkerEnv(consolidator)", () => {
 describe("registerConsolidatorTools (scoped to .memory/)", () => {
 	let cwd: string;
 	let memoryRoot: string;
-	let tools: Map<string, any>;
+	let tools: Map<string, ToolExec>;
 
 	beforeEach(() => {
 		cwd = mkdtempSync(join(tmpdir(), "om-cons-tools-"));
 		memoryRoot = join(cwd, ".memory");
 		tools = new Map();
-		const fakePi = { registerTool: (def: any) => tools.set(def.name, def) } as any;
+		const fakePi = { registerTool: (def: ToolDefinition) => tools.set(def.name, def as unknown as ToolExec) } as unknown as ExtensionAPI;
 		registerConsolidatorTools(fakePi, memoryRoot);
 	});
 	afterEach(() => {
@@ -36,40 +40,40 @@ describe("registerConsolidatorTools (scoped to .memory/)", () => {
 	});
 
 	it("write then read a topic file", async () => {
-		const res = await tools.get("write").execute("1", { path: "auth.md", content: "---\nid: auth\n---\nbody" });
+		const res = await tools.get("write")!.execute("1", { path: "auth.md", content: "---\nid: auth\n---\nbody" });
 		expect(res.content[0].text).toContain("Wrote auth.md");
 		expect(readFileSync(join(memoryRoot, "auth.md"), "utf-8")).toContain("body");
-		const read = await tools.get("read").execute("2", { path: "auth.md" });
+		const read = await tools.get("read")!.execute("2", { path: "auth.md" });
 		expect(read.content[0].text).toContain("body");
 	});
 
 	it("refuses to write or edit INDEX.md", async () => {
-		const w = await tools.get("write").execute("1", { path: "INDEX.md", content: "x" });
+		const w = await tools.get("write")!.execute("1", { path: "INDEX.md", content: "x" });
 		expect(w.content[0].text).toContain("generated automatically");
 		expect(existsSync(join(memoryRoot, "INDEX.md"))).toBe(false);
 	});
 
 	it("rejects paths that escape .memory/", async () => {
-		const r = await tools.get("write").execute("1", { path: "../escape.md", content: "x" });
+		const r = await tools.get("write")!.execute("1", { path: "../escape.md", content: "x" });
 		expect(r.content[0].text).toContain("escapes .memory/");
 		expect(existsSync(join(cwd, "escape.md"))).toBe(false);
 	});
 
 	it("edit replaces an exact unique substring and rejects ambiguous matches", async () => {
-		await tools.get("write").execute("1", { path: "t.md", content: "alpha beta alpha" });
-		const ambiguous = await tools.get("edit").execute("2", { path: "t.md", oldText: "alpha", newText: "X" });
+		await tools.get("write")!.execute("1", { path: "t.md", content: "alpha beta alpha" });
+		const ambiguous = await tools.get("edit")!.execute("2", { path: "t.md", oldText: "alpha", newText: "X" });
 		expect(ambiguous.content[0].text).toContain("ambiguous");
-		const ok = await tools.get("edit").execute("3", { path: "t.md", oldText: "beta", newText: "BETA" });
+		const ok = await tools.get("edit")!.execute("3", { path: "t.md", oldText: "beta", newText: "BETA" });
 		expect(ok.content[0].text).toContain("Edited");
 		expect(readFileSync(join(memoryRoot, "t.md"), "utf-8")).toBe("alpha BETA alpha");
 	});
 
 	it("ls and grep operate within .memory/", async () => {
-		await tools.get("write").execute("1", { path: "auth.md", content: "uses JWT tokens" });
-		await tools.get("write").execute("2", { path: "deploy.md", content: "uses fly.io" });
-		const ls = await tools.get("ls").execute("3", {});
-		expect(ls.content[0].text.split("\n").sort()).toEqual(["auth.md", "deploy.md"]);
-		const grep = await tools.get("grep").execute("4", { pattern: "JWT" });
+		await tools.get("write")!.execute("1", { path: "auth.md", content: "uses JWT tokens" });
+		await tools.get("write")!.execute("2", { path: "deploy.md", content: "uses fly.io" });
+		const ls = await tools.get("ls")!.execute("3", {});
+		expect(ls.content[0]?.text?.split("\n").sort()).toEqual(["auth.md", "deploy.md"]);
+		const grep = await tools.get("grep")!.execute("4", { pattern: "JWT" });
 		expect(grep.content[0].text).toContain("auth.md:1");
 	});
 });

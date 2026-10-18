@@ -8,7 +8,7 @@ import { renderTimeline } from "../ui/timeline.js";
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:status", {
 		description: "Show observational-memory status (workers, buffer, clocks)",
-		handler: async (_args: string, ctx: any) => {
+		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 			if (!runtime.enabled) {
 				ctx.ui.notify("om is off (use /om on to enable)", "info");

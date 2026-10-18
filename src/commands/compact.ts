@@ -4,7 +4,7 @@ import type { Runtime } from "../runtime.js";
 export function registerCompactCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:compact", {
 		description: "Force an observational-memory compaction now (ignores threshold)",
-		handler: async (_args: string, ctx: any) => {
+		handler: async (_args, ctx) => {
 			if (!runtime.enabled) {
 				if (ctx.hasUI) ctx.ui.notify("om is off (use /om on to enable)", "info");
 				return;

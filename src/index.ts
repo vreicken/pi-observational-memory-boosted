@@ -9,7 +9,7 @@
  * session (A2a). When the gate is off, every handler returns at its first line and the
  * extension is completely invisible.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerCompactCommand } from "./commands/compact.js";
 import { registerConsolidateCommand } from "./commands/consolidate.js";
 import { registerStatusCommand } from "./commands/status.js";
@@ -34,15 +34,17 @@ function readGateFromLedger(branch: Entry[]): boolean {
 export default function observationalMemory(pi: ExtensionAPI): void {
 	const runtime = new Runtime();
 
-	function attachIfEnabled(ctx: any): void {
-		if (runtime.enabled && ctx.mode === "tui" && ctx.hasUI && ctx.ui) {
+	function attachIfEnabled(ctx: ExtensionContext): void {
+		// `mode` is not part of pi's ExtensionContext (was only reachable via `any`); cast aloud at
+		// the one check site. Behaviour preserved untouched.
+		if (runtime.enabled && (ctx as { mode?: string }).mode === "tui" && ctx.hasUI && ctx.ui) {
 			runtime.status.attach(ctx.ui);
 		} else {
 			runtime.status.detach();
 		}
 	}
 
-	pi.on("session_start", (_event: unknown, ctx: any) => {
+	pi.on("session_start", (_event, ctx) => {
 		runtime.ensureConfig(ctx.cwd);
 		runtime.dispatchedCoversUpToId = undefined;
 		const branch = ctx.sessionManager.getBranch() as Entry[];
@@ -60,7 +62,7 @@ export default function observationalMemory(pi: ExtensionAPI): void {
 
 	pi.registerCommand("om", {
 		description: "Toggle observational memory for this session (/om on, /om off)",
-		handler: async (args: string, ctx: any) => {
+		handler: async (args, ctx) => {
 			const arg = (args ?? "").trim().toLowerCase();
 			const next = arg === "on" ? true : arg === "off" ? false : !runtime.enabled;
 			if (next === runtime.enabled) {

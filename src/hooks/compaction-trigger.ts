@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { OM_RESUME, rawTokensSinceLastCompaction, type Entry } from "../ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
@@ -15,13 +15,10 @@ const RESUME_PROMPT =
 const RETRYABLE_ERROR_RE =
 	/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
 
-function contextPressureTokens(
-	ctx: { getContextUsage?: () => { tokens: number | null } | undefined; sessionManager: { getBranch: () => Entry[] } },
-	threshold: number,
-): { tokens: number; due: boolean } {
+function contextPressureTokens(ctx: ExtensionContext, threshold: number): { tokens: number; due: boolean } {
 	const live = ctx.getContextUsage?.()?.tokens;
 	if (live != null) return { tokens: live, due: live >= threshold };
-	const raw = rawTokensSinceLastCompaction(ctx.sessionManager.getBranch());
+	const raw = rawTokensSinceLastCompaction(ctx.sessionManager.getBranch() as Entry[]);
 	return { tokens: raw, due: raw >= threshold };
 }
 
@@ -33,12 +30,14 @@ function contextPressureTokens(
  * an empty one means this `turn_end` IS the run's terminal turn (equivalent to `agent_end`).
  * We use that to decide whether to auto-resume after compaction.
  */
-function turnWillContinue(event: any): boolean {
-	const toolResults = event?.toolResults;
-	if (Array.isArray(toolResults) && toolResults.length > 0) return true;
+function turnWillContinue(event: TurnEndEvent): boolean {
+	if (Array.isArray(event.toolResults) && event.toolResults.length > 0) return true;
 	// Fallback for shapes without toolResults: an assistant that stopped to call tools.
-	const stop = event?.message?.stopReason;
-	return stop === "tool_use" || stop === "tool_calls";
+	// (pi's StopReason for tool calls is "toolUse" — see pi-ai types. Previously compared against
+	// "tool_use"/"tool_calls", which never matched: the fallback was dead in practice. Restored
+	// to the real literal while typing this function.)
+	const message = event.message;
+	return message.role === "assistant" && message.stopReason === "toolUse";
 }
 
 /**
@@ -59,7 +58,7 @@ function turnWillContinue(event: any): boolean {
  * was the run's terminal turn is left to stop, exactly as if no compaction had happened.
  */
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
-	pi.on("turn_end", (event: any, ctx: any) => {
+	pi.on("turn_end", (event, ctx) => {
 		if (!runtime.enabled || runtime.config.passive) return;
 		if (runtime.compactInFlight) return;
 

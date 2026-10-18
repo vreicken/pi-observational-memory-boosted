@@ -2,6 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+
+/** Shoehorned: pi's ToolDefinition.execute takes 5 params; tests invoke the 2 used ones. */
+type ToolExec = { execute(toolCallId: string, params: unknown): Promise<unknown> };
 
 import { AGENT_EXTENSION_PATH, buildWorkerArgv, buildWorkerEnv, modelArg } from "../src/spawn/launch.js";
 import { readObserverResult, runResultPath, runsDir, writeObserverResult } from "../src/spawn/runs.js";
@@ -95,8 +99,8 @@ describe("registerObserverTool", () => {
 
 	it("writes an empty result file on registration and accumulates across calls", async () => {
 		const path = join(dir, "r.result.json");
-		let tool: any;
-		const fakePi = { registerTool: (def: any) => (tool = def) } as any;
+		let tool!: ToolExec;
+		const fakePi = { registerTool: (def: ToolDefinition) => (tool = def as unknown as ToolExec) } as unknown as ExtensionAPI;
 
 		registerObserverTool(fakePi, path);
 		expect(readObserverResult(path).observations).toEqual([]);
