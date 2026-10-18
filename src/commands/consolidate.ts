@@ -10,7 +10,7 @@ import { evaluateConsolidatorTrigger } from "../hooks/consolidator-trigger.js";
 export function registerConsolidateCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:consolidate", {
 		description: "Force an observational-memory consolidation now (ignores the pool threshold)",
-		handler: async (_args: string, ctx: any) => {
+		handler: async (_args, ctx) => {
 			if (!runtime.enabled) {
 				if (ctx.hasUI) ctx.ui.notify("om is off (use /om on to enable)", "info");
 				return;

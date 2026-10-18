@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { writeObserverResult, type RawObservation } from "../../src/spawn/runs.js";
@@ -47,7 +47,7 @@ export function registerObserverTool(pi: ExtensionAPI, resultPath: string): void
 			"Call multiple times as you work through the chunk; stop calling when coverage is complete, " +
 			"then emit a short plain-text confirmation to end the run.",
 		parameters: RecordObservationsSchema,
-		async execute(_id: string, params: RecordObservationsInput, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: ExtensionContext) {
+		async execute(_id: string, params: RecordObservationsInput) {
 			let added = 0;
 			let duplicates = 0;
 			for (const obs of params.observations) {

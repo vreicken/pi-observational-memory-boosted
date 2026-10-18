@@ -111,7 +111,7 @@ export function canSkipObserverWait(
 }
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
-	pi.on("session_before_compact", async (event: any, ctx: any) => {
+	pi.on("session_before_compact", async (event, ctx) => {
 		if (!runtime.enabled || runtime.config.passive) return undefined;
 
 		const hasUI = ctx.hasUI;
