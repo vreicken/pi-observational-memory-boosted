@@ -1,15 +1,14 @@
-import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
-import { OM_RESUME, rawTokensSinceLastCompaction, type Entry } from "../ledger/index.js";
+import type {
+	CompactionEntryDraft,
+	ExtensionAPI,
+	ExtensionContext,
+	SessionBoundaryDraft,
+	TurnEndEvent,
+	TurnEndEventResult,
+} from "@earendil-works/pi-coding-agent";
+import { rawTokensSinceLastCompaction, type Entry } from "../ledger/index.js";
 import type { Runtime } from "../runtime.js";
-
-/**
- * Synthetic prompt that resumes the agent after a mid-run compaction. Delivered as a hidden
- * `role: "custom"` message (display:false) that pi surfaces to the model as a user turn. Kept
- * terse: the freshly-rendered compaction block already carries the recovered context.
- */
-const RESUME_PROMPT =
-	"[automatic] Your context was just compacted to free space; no user message was sent. " +
-	"Continue exactly where you left off, as if the compaction had not happened.";
+import { prepareCompactionDraft } from "./compaction-hook.js";
 
 /** Pi's retryable-error detection: don't compact between an auto-retried turn's attempts. */
 const RETRYABLE_ERROR_RE =
@@ -28,37 +27,39 @@ function contextPressureTokens(ctx: ExtensionContext, threshold: number): { toke
  * The agent loop continues after a turn iff that turn issued tool calls (whose results are fed
  * back). pi hands us those results on the event, so a non-empty `toolResults` means "mid-run";
  * an empty one means this `turn_end` IS the run's terminal turn (equivalent to `agent_end`).
- * We use that to decide whether to auto-resume after compaction.
+ * We use that to decide whether compaction continues the run.
  */
 function turnWillContinue(event: TurnEndEvent): boolean {
 	if (Array.isArray(event.toolResults) && event.toolResults.length > 0) return true;
 	// Fallback for shapes without toolResults: an assistant that stopped to call tools.
-	// (pi's StopReason for tool calls is "toolUse" — see pi-ai types. Previously compared against
-	// "tool_use"/"tool_calls", which never matched: the fallback was dead in practice. Restored
-	// to the real literal while typing this function.)
+	// (pi's StopReason for tool calls is "toolUse" — see pi-ai types.)
 	const message = event.message;
 	return message.role === "assistant" && message.stopReason === "toolUse";
 }
 
 /**
- * Trigger compaction on `turn_end` once live context usage crosses `compactAtContextTokens`.
+ * Trigger compaction at the actionable `turn_end` boundary once live context usage crosses
+ * `compactAtContextTokens`.
  *
- * We fire on turn_end (not agent_end) so compaction can kick in BETWEEN turns — pausing the
- * chat immediately — rather than only after the whole agent run settles. We call `ctx.compact()`
- * straight away (no idle gating): waiting for in-flight observers happens inside the
- * `session_before_compact` hook, so the chat is already paused while the observers finish and
- * the rendered block reflects settled memory state (design R5).
+ * The handler is an actionable boundary (pi >= 0.87): it may append structural entries and
+ * request one continuation. We render the compaction entry here through the shared preparation
+ * (wait for in-flight observers per design R5, snap the cutoff to an observation watermark,
+ * render journey + memory map + observation pool) and hand it back as a boundary draft:
  *
- * Mid-run vs terminal turn (the resume decision):
- * `ctx.compact()` synchronously disconnects + aborts the agent loop, then compacts; when it
- * settles the session is idle and will NOT continue on its own (only pi's internal overflow
- * path auto-retries; a manual/threshold compaction always stops). So if this turn had pending
- * tool work we resume the agent ourselves — via a hidden custom message that triggers a new
- * turn (option A; no agent-invisible resume exists through the public API). A `turn_end` that
- * was the run's terminal turn is left to stop, exactly as if no compaction had happened.
+ *   { entries: [...event.entries, compactionDraft], continue: shouldResume }
+ *
+ * pi applies the draft via `appendCompaction` and — when continuing — issues the next provider
+ * request against the freshly compacted projection. No abort, no chat pause, and crucially no
+ * synthetic resume turn: the pre-0.87 flow needed a hidden custom message mimicking a user turn
+ * to restart the agent after `ctx.compact()` disconnected the loop; the boundary continuation
+ * the boundary continuation does it agent-invisibly.
+ *
+ * A terminal turn (no pending tool work) gets the compaction entry without a continuation —
+ * the run ends exactly as if no compaction had happened, and any future request starts from
+ * the compacted context.
  */
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
-	pi.on("turn_end", (event, ctx) => {
+	pi.on("turn_end", async (event, ctx): Promise<TurnEndEventResult | void> => {
 		if (!runtime.enabled || runtime.config.passive) return;
 		if (runtime.compactInFlight) return;
 
@@ -75,8 +76,8 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 
 		if (!contextPressureTokens(ctx, runtime.config.compactAtContextTokens).due) return;
 
-		// Capture the resume decision NOW, from this turn's event — ctx state at onComplete
-		// (post-abort, post-reload) no longer reflects whether the turn had pending tool work.
+		// Continuation is decided NOW, from this turn's event: `turn_end` had pending tool work.
+		// Terminal turns stop anyway; continuing one would create more work, not resume lost work.
 		const shouldResume = runtime.config.resumeAfterMidRunCompaction && turnWillContinue(event);
 
 		const hasUI = ctx.hasUI;
@@ -84,32 +85,36 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		runtime.compactInFlight = true;
 		if (hasUI) ui?.notify("om: context threshold reached — compacting (waiting for in-flight observers)…", "info");
 
-		// Fire-and-forget. The before-compact hook waits for observers and renders the block.
-		ctx.compact({
-			onComplete: () => {
-				runtime.compactInFlight = false;
-				if (hasUI) ui?.notify("om: compaction complete", "info");
-				// Resume only a mid-run compaction, and only if still enabled (the gate may have
-				// flipped, or the session may be tearing down, while compaction ran).
-				if (!shouldResume || !runtime.enabled || runtime.config.passive) return;
-				try {
-					// sendMessage lives on the ExtensionAPI (`pi`), not on the event-handler ctx
-					// (ExtensionContext). Triggers a new turn from a hidden custom message.
-					pi.sendMessage(
-						{ customType: OM_RESUME, content: RESUME_PROMPT, display: false },
-						{ triggerTurn: true },
-					);
-				} catch (error) {
-					const msg = error instanceof Error ? error.message : String(error);
-					runtime.lastWorkerError = `resume failed: ${msg}`;
-					if (hasUI) ui?.notify(`om: resume failed — ${msg}`, "error");
-				}
-			},
-			onError: (error: { message: string }) => {
-				runtime.compactInFlight = false;
-				if (error.message === "Compaction cancelled") return;
-				if (hasUI) ui?.notify(`om: ${error.message}`, "error");
-			},
-		});
+		try {
+			const draft = await prepareCompactionDraft(
+				{
+					getBranch: () => ctx.sessionManager.getBranch() as Entry[],
+					notify: hasUI ? (text, level) => ui?.notify(text, level) : undefined,
+				},
+				runtime,
+			);
+
+			const compactionDraft: CompactionEntryDraft = {
+				type: "compaction",
+				summary: draft.summary,
+				firstKeptEntryId: draft.firstKeptEntryId,
+				details: draft.details,
+			};
+			const entries: SessionBoundaryDraft[] = [...(event.entries ?? []), compactionDraft];
+
+			if (hasUI) ui?.notify("om: compaction complete", "info");
+			// Only request a continuation the loop would not schedule itself: a mid-run turn.
+			// Returning `continue: false` on a naturally-continuing turn is harmless, but asking
+			// for one on a terminal turn would resurrect a stopped run — so the guard above is
+			// load-bearing.
+			return { entries, continue: shouldResume };
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			runtime.lastWorkerError = `compaction failed: ${msg}`;
+			if (hasUI) ui?.notify(`om: compaction failed — ${msg}`, "error");
+			return undefined;
+		} finally {
+			runtime.compactInFlight = false;
+		}
 	});
 }

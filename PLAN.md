@@ -282,20 +282,15 @@ pi --no-extensions --no-skills --no-prompt-templates --no-context-files \
   no markdown; prefer inline conversation timestamps." Drop relevance/sourceEntryIds language.
 
 ### A6. Compaction (`hooks/compaction-trigger.ts`, `hooks/compaction-hook.ts`)
-- **Trigger** (`turn_end`): if context pressure `>= compactAtContextTokens` and not already
-  compacting → `ctx.compact()` (fire-and-forget). `ctx.compact()` synchronously disconnects +
-  aborts the agent loop up front, so firing it from `turn_end` is race-free; the
-  `session_before_compact` hook waits for in-flight observers so the block reflects settled
-  state. We fire on `turn_end` (not `agent_end`) so compaction pauses the chat *between* turns.
-- **Auto-resume after a mid-run compaction** (`resumeAfterMidRunCompaction`, default true):
-  a manual/threshold compaction always leaves the session idle (only pi's *internal overflow*
-  path auto-retries). To make a mid-run compaction transparent, in `onComplete` we resume the
-  agent ourselves via `ctx.sendMessage({ customType: "om.resume", display:false }, { triggerTurn:true })`
-  — a hidden custom message pi surfaces to the model as a user turn (no agent-*invisible* resume
-  exists through the public API; `convertToLlm` rewrites custom→user). The resume fires **only**
-  when the turn had pending tool work. A `turn_end` that is also the run's terminal turn
-  (`toolResults` empty) is left to stop, exactly as if no compaction happened. The mid-run
-  decision is captured from the `turn_end` event *before* compaction aborts/reloads.
+- **Trigger** (actionable `turn_end` boundary, pi >= 0.87): if context pressure `>=
+  compactAtContextTokens` and not already compacting, the handler itself orchestrates the
+  compaction by returning a boundary result — `{ entries: [...event.entries, compactionDraft],
+  continue: shouldResume }`. The shared preparation (in the hook) waits for in-flight observers,
+  snaps the cutoff to an observation watermark and renders the block; the draft is applied by
+  pi via `appendCompaction` and pi issues the next provider request against the compacted
+  projection. No `ctx.compact()` disconnect, no chat pause, no synthetic resume message
+  (the pre-0.87 hidden `om.resume` custom turn is gone). `/om:compact` and pi-initiated
+  (overflow) compaction still flow through the `session_before_compact` interception.
 - **Hook** (`session_before_compact`), deterministic + model-free:
   1. `preparation.firstKeptEntryId` gives pi's proposed kept tail. **Snap** it to the nearest
      **observation chunk boundary** (a covered `coversUpToId` source-entry id) such that the
