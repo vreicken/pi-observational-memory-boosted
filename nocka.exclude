@@ -1,0 +1,16 @@
+# Paths that are never gated components (D-32, pipeline/prompts/setup.md,
+# docs/QA-FLOW.md). Same convention as Nocka's root nocka.exclude.
+#
+# Anchored to the target root (leading "/") — a top-level directory only; an
+# unanchored pattern would also match a same-named directory nested anywhere
+# else in the tree, which the pre-flat-file matcher never did.
+#
+# /temp/ is the Nocka pipeline's own scratch space: SDLC writes temp/qa/ (the QA
+# run index plus pointers to the raw reports) fresh on every QA pass. It is
+# control-plane output, not the task's code, and is never a gated component.
+# Mirrors the `temp/` entry in .gitignore — keep the two in step.
+#
+# Added 2026-10-18 (nocka_task 5bc71d4e QA pass): the QA run index itself warned
+# that `git check-ignore` could not confirm temp/ was excluded, so writing it
+# surfaced as an untracked change under the settle dirty-tree check.
+/temp/

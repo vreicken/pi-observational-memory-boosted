@@ -30,3 +30,6 @@ coverage/
 npm-debug.log*
 
 .memory/
+
+# Nocka pipeline scratch (SDLC writes temp/qa/ here each pass) — never tracked or gated
+temp/
