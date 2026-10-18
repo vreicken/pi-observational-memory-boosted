@@ -21,14 +21,10 @@ export const OM_ENABLED = "om.enabled";
  * Summed across the WHOLE session (every branch), so spend never rolls back under /tree.
  */
 export const OM_COST = "om.cost";
-/**
- * Synthetic continuation message used to resume the agent loop after a mid-run compaction
- * (a `turn_end` that was NOT the run's terminal turn). Carried as a `role: "custom"` message
- * with `display: false` so it is hidden from the human TUI; pi still surfaces it to the model
- * as a user-role turn (convertToLlm rewrites custom → user). See hooks/compaction-trigger.ts.
- */
-export const OM_RESUME = "om.resume";
 
+/**
+ * One session-tree entry, as stored in the session JSONL.
+ */
 export type Entry = {
 	type: string;
 	id: string;

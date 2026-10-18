@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
-import type { CompactOptions, ExtensionAPI, TurnEndEvent } from "@earendil-works/pi-coding-agent";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ExtensionAPI, SessionBoundaryDraft, TurnEndEvent, TurnEndEventResult } from "@earendil-works/pi-coding-agent";
 
 import { registerCompactionTrigger } from "../src/hooks/compaction-trigger.js";
-import { OM_RESUME } from "../src/ledger/index.js";
 import { Runtime } from "../src/runtime.js";
 import { rawMessage, type TestEntry } from "./fixtures/session.js";
 
@@ -12,16 +14,13 @@ type CtxStub = {
 	ui: { notify: (message: string, level?: "info" | "warning" | "error") => void };
 	sessionManager: { getBranch: () => unknown[] };
 	getContextUsage?: () => { tokens: number | null } | undefined;
-	compact?: (options?: CompactOptions) => void;
 };
-type TurnHandler = (event: TurnEndEvent, ctx: CtxStub) => unknown;
+type TurnHandler = (event: TurnEndEvent, ctx: CtxStub) => Promise<TurnEndEventResult | void>;
 
 type Harness = {
 	turn: TurnHandler;
 	notifications: Notification[];
 	ctx: CtxStub;
-	compacted: CompactOptions[];
-	sent: Array<{ customType: string; options: unknown }>;
 };
 
 function makeHarness(opts: {
@@ -31,7 +30,7 @@ function makeHarness(opts: {
 	passive?: boolean;
 	enabled?: boolean;
 	inFlight?: boolean;
-	sendMessageThrows?: boolean;
+	getBranchThrows?: boolean;
 }): { runtime: Runtime; harness: Harness } {
 	const runtime = new Runtime();
 	runtime.enabled = opts.enabled ?? true;
@@ -42,14 +41,19 @@ function makeHarness(opts: {
 	runtime.compactInFlight = opts.inFlight ?? false;
 
 	const notifications: Notification[] = [];
-	const compacted: CompactOptions[] = [];
-	const sent: Array<{ customType: string; options: unknown }> = [];
+	const memoryRoot = mkdtempSync(join(tmpdir(), "om-trigger-"));
+	createdTempRoots.push(memoryRoot);
+	runtime.memoryRoot = join(memoryRoot, ".memory", "sess-1");
 	const ctx: CtxStub = {
 		hasUI: true,
 		ui: { notify: (message, level) => notifications.push({ message, level }) },
-		sessionManager: { getBranch: () => opts.branch ?? [] },
+		sessionManager: {
+			getBranch: () => {
+				if (opts.getBranchThrows) throw new Error("branch exploded");
+				return opts.branch ?? [];
+			},
+		},
 		getContextUsage: () => (opts.liveTokens === undefined ? undefined : { tokens: opts.liveTokens ?? null }),
-		compact: (options) => compacted.push(options ?? {}),
 	};
 
 	let registered: TurnHandler | undefined;
@@ -57,123 +61,139 @@ function makeHarness(opts: {
 		on: (event: string, handler: TurnHandler) => {
 			if (event === "turn_end") registered = handler;
 		},
-		sendMessage: (message: { customType: string }, options: unknown) => {
-			if (opts.sendMessageThrows) throw new Error("channel closed");
-			sent.push({ customType: message.customType, options });
-		},
 	} as unknown as ExtensionAPI;
 
 	registerCompactionTrigger(pi, runtime);
 	if (!registered) throw new Error("turn_end handler was not registered");
-	return { runtime, harness: { turn: registered, notifications, ctx, compacted, sent } };
+	return { runtime, harness: { turn: registered, notifications, ctx } };
 }
 
-function turnEvent(overrides: { toolResults?: TestEntry[]; message?: unknown } = {}): TurnEndEvent {
+function turnEvent(
+	overrides: { toolResults?: TestEntry[]; message?: unknown; entries?: SessionBoundaryDraft[] } = {},
+): TurnEndEvent {
 	return {
 		type: "turn_end",
 		turnIndex: 0,
 		message: overrides.message ?? { role: "user", content: "hi" },
 		toolResults: overrides.toolResults ?? [],
+		entries: overrides.entries ?? [],
+		continue: false,
 	} as unknown as TurnEndEvent;
 }
 
+const createdTempRoots: string[] = [];
+afterEach(() => {
+	for (const root of createdTempRoots) rmSync(root, { recursive: true, force: true });
+	createdTempRoots.length = 0;
+});
+
 describe("registerCompactionTrigger gates", () => {
-	it("does nothing while om is disabled", () => {
+	it("does nothing while om is disabled", async () => {
 		const { harness } = makeHarness({ enabled: false, liveTokens: 9999 });
-		harness.turn(turnEvent(), harness.ctx);
-		expect(harness.compacted).toHaveLength(0);
+		expect(await harness.turn(turnEvent(), harness.ctx)).toBeUndefined();
 	});
 
-	it("does nothing in passive mode", () => {
+	it("does nothing in passive mode", async () => {
 		const { harness } = makeHarness({ passive: true, liveTokens: 9999 });
-		harness.turn(turnEvent(), harness.ctx);
-		expect(harness.compacted).toHaveLength(0);
+		expect(await harness.turn(turnEvent(), harness.ctx)).toBeUndefined();
 	});
 
-	it("does nothing when a compaction is already in flight", () => {
+	it("does nothing when a compaction is already in flight", async () => {
 		const { harness } = makeHarness({ inFlight: true, liveTokens: 9999 });
-		harness.turn(turnEvent(), harness.ctx);
-		expect(harness.compacted).toHaveLength(0);
+		expect(await harness.turn(turnEvent(), harness.ctx)).toBeUndefined();
 	});
 
-	it("skips a turn pi will auto-retry on a transient provider error", () => {
+	it("skips a turn pi will auto-retry on a transient provider error", async () => {
 		const { harness } = makeHarness({ liveTokens: 9999 });
-		harness.turn(
+		const result = await harness.turn(
 			turnEvent({ message: { role: "assistant", stopReason: "error", errorMessage: "upstream returned error: 503" } }),
 			harness.ctx,
 		);
-		expect(harness.compacted).toHaveLength(0);
+		expect(result).toBeUndefined();
 	});
 
-	it("does not compact while usage is below the threshold", () => {
+	it("does not compact while usage is below the threshold", async () => {
 		const { harness } = makeHarness({ liveTokens: 99 });
-		harness.turn(turnEvent(), harness.ctx);
-		expect(harness.compacted).toHaveLength(0);
+		expect(await harness.turn(turnEvent(), harness.ctx)).toBeUndefined();
 	});
 });
 
-describe("registerCompactionTrigger firing", () => {
-	it("compacts at the threshold and resumes after a mid-run (tool-calling) turn", () => {
-		const { runtime, harness } = makeHarness({ liveTokens: 500 });
-		harness.turn(turnEvent({ toolResults: [rawMessage("tr-1", "result")] }), harness.ctx);
+describe("registerCompactionTrigger boundary continuation", () => {
+	it("compacts at the threshold and continues after a mid-run (tool-calling) turn", async () => {
+		const { runtime, harness } = makeHarness({ liveTokens: 500, branch: [rawMessage("raw-1", "x".repeat(40))] });
+		const result = await harness.turn(turnEvent({ toolResults: [rawMessage("tr-1", "result")] }), harness.ctx);
 
-		expect(runtime.compactInFlight).toBe(true);
-		expect(harness.compacted).toHaveLength(1);
+		expect(runtime.compactInFlight).toBe(false);
 		expect(harness.notifications[0].message).toContain("context threshold reached");
+		expect(result?.continue).toBe(true);
 
-		harness.compacted[0].onComplete?.({} as never);
-		expect(runtime.compactInFlight).toBe(false);
-		expect(harness.sent).toHaveLength(1);
-		expect(harness.sent[0].customType).toBe(OM_RESUME);
-		expect(harness.sent[0].options).toEqual({ triggerTurn: true });
+		expect(result?.entries).toHaveLength(1);
+		const draft = result?.entries?.[0];
+		expect(draft?.type).toBe("compaction");
+		expect(typeof (draft as { summary: string }).summary).toBe("string");
+		expect((draft as { firstKeptEntryId: string }).firstKeptEntryId).toBeTruthy();
+		expect(harness.notifications.at(-1)?.message).toContain("compaction complete");
 	});
 
-	it("does not resume when the compacted turn was terminal", () => {
-		const { runtime, harness } = makeHarness({ liveTokens: 500 });
-		harness.turn(turnEvent({ message: { role: "assistant", stopReason: "stop" } }), harness.ctx);
+	it("does not continue after the compacted turn was terminal", async () => {
+		const { harness } = makeHarness({ liveTokens: 500, branch: [rawMessage("raw-1", "x".repeat(40))] });
+		const result = await harness.turn(turnEvent({ message: { role: "assistant", stopReason: "stop" } }), harness.ctx);
 
-		harness.compacted[0].onComplete?.({} as never);
-		expect(runtime.compactInFlight).toBe(false);
-		expect(harness.sent).toHaveLength(0);
+		expect(result?.entries).toHaveLength(1);
+		expect(result?.continue).toBeFalsy();
 	});
 
-	it("falls back to raw branch tokens and the toolUse stopReason when no live usage is exposed", () => {
+	it("honors resumeAfterMidRunCompaction=false on a mid-run turn", async () => {
+		const { harness } = makeHarness({ liveTokens: 500, resumeAfter: false, branch: [rawMessage("raw-1", "x".repeat(40))] });
+		const result = await harness.turn(turnEvent({ toolResults: [rawMessage("tr-1", "result")] }), harness.ctx);
+
+		expect(result?.entries).toHaveLength(1);
+		expect(result?.continue).toBeFalsy();
+	});
+
+	it("chains draft entries after pi's accumulated boundary entries", async () => {
+		const { harness } = makeHarness({ liveTokens: 500, branch: [rawMessage("raw-1", "x".repeat(40))] });
+		const piDraft: SessionBoundaryDraft = { type: "custom", customType: "pi.provenance", data: { at: 1 } };
+		const result = await harness.turn(turnEvent({ toolResults: [rawMessage("tr-1", "r")], entries: [piDraft] }), harness.ctx);
+
+		expect(result?.entries).toHaveLength(2);
+		expect(result?.entries?.[0]).toBe(piDraft);
+		expect(result?.entries?.[1]?.type).toBe("compaction");
+	});
+
+	it("falls back to raw branch tokens and the toolUse stopReason when no live usage is exposed", async () => {
 		// compactAtContextTokens 0 makes the raw-token fallback due on any branch.
-		const { runtime, harness } = makeHarness({ liveTokens: undefined, branch: [rawMessage("raw-1", "x".repeat(40))] });
+		const { runtime, harness } = makeHarness({
+			liveTokens: undefined,
+			branch: [rawMessage("raw-1", "x".repeat(40))],
+		});
 		runtime.config.compactAtContextTokens = 0;
 		harness.ctx.getContextUsage = undefined;
-		harness.turn(turnEvent({ message: { role: "assistant", stopReason: "toolUse" } }), harness.ctx);
+		const result = await harness.turn(turnEvent({ message: { role: "assistant", stopReason: "toolUse" } }), harness.ctx);
 
-		expect(harness.compacted).toHaveLength(1);
-		harness.compacted[0].onComplete?.({} as never);
-		expect(harness.sent).toHaveLength(1);
+		expect(result?.entries).toHaveLength(1);
+		expect(result?.continue).toBe(true);
 	});
 
-	it("records a resume failure instead of throwing", () => {
-		const { runtime, harness } = makeHarness({ liveTokens: 500, sendMessageThrows: true });
-		harness.turn(turnEvent({ toolResults: [rawMessage("tr-1", "result")] }), harness.ctx);
-		harness.compacted[0].onComplete?.({} as never);
+	it("falls back to the single source entry as the kept boundary on a minimal branch", async () => {
+		const { harness } = makeHarness({ liveTokens: 500, branch: [rawMessage("raw-1", "unique-body")] });
+		const result = await harness.turn(turnEvent({ toolResults: [rawMessage("tr-1", "r")] }), harness.ctx);
 
-		expect(runtime.lastWorkerError).toContain("resume failed: channel closed");
-		expect(harness.notifications.at(-1)).toEqual({ message: "om: resume failed — channel closed", level: "error" });
+		const draft = result?.entries?.[0] as { type: string; firstKeptEntryId: string };
+		expect(draft.type).toBe("compaction");
+		expect(draft.firstKeptEntryId).toBe("raw-1");
 	});
 
-	it("surfaces a compaction error and clears the guard", () => {
-		const { runtime, harness } = makeHarness({ liveTokens: 500 });
-		harness.turn(turnEvent(), harness.ctx);
-		harness.compacted[0].onError?.(new Error("disk full"));
+	it("records a preparation failure instead of throwing", async () => {
+		const { runtime, harness } = makeHarness({ liveTokens: 500, getBranchThrows: true });
+		const result = await harness.turn(turnEvent({ toolResults: [rawMessage("tr-1", "result")] }), harness.ctx);
 
+		expect(result).toBeUndefined();
 		expect(runtime.compactInFlight).toBe(false);
-		expect(harness.notifications.at(-1)).toEqual({ message: "om: disk full", level: "error" });
-	});
-
-	it("treats a cancelled compaction as silent", () => {
-		const { runtime, harness } = makeHarness({ liveTokens: 500 });
-		harness.turn(turnEvent(), harness.ctx);
-		const before = harness.notifications.length;
-		harness.compacted[0].onError?.(new Error("Compaction cancelled"));
-
-		expect(runtime.compactInFlight).toBe(false);
-		expect(harness.notifications).toHaveLength(before);
+		expect(runtime.lastWorkerError).toContain("compaction failed: branch exploded");
+		expect(harness.notifications.at(-1)).toEqual({
+			message: "om: compaction failed — branch exploded",
+			level: "error",
+		});
 	});
 });

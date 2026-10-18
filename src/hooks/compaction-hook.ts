@@ -110,6 +110,91 @@ export function canSkipObserverWait(
 	return true;
 }
 
+/**
+ * Branch + notification surface needed to prepare a compaction. Both call sites feed this:
+ * the `session_before_compact` hook (pi-proposed cutoff, dedupe guard) and the actionable
+ * `turn_end` boundary (no proposal — the fallback estimator supplies one).
+ */
+export type CompactionPreparationInputs = {
+	/** Current branch, resolved lazily (a re-read happens after the observer wait). */
+	getBranch: () => Entry[];
+	/** pi's proposed `firstKeptEntryId` when the compaction originated from pi's own preparation. */
+	proposedFirstKeptEntryId?: string;
+	notify?: (message: string, level?: "info" | "warning" | "error") => void;
+};
+
+export type CompactionDraft = {
+	summary: string;
+	firstKeptEntryId: string;
+	details: unknown;
+};
+
+/**
+ * Propose a kept-start for the boundary path, where pi has no preparation to borrow. Walk the
+ * branch backwards accumulating raw tokens; the kept start is the first valid cut point after
+ * the entry where the accumulated tail first fits `tailTokens` (conservatively keeps MORE
+ * verbatim than requested, mirroring pi's overflow-preparation spirit).
+ */
+export function boundaryTailProposal(branch: Entry[], tailTokens: number): string {
+	for (let i = branch.length - 2; i >= 0; i--) {
+		if (!isSourceEntry(branch[i])) continue;
+		if (rawTokensAfterIndex(branch, i) > tailTokens) {
+			for (let j = i + 1; j < branch.length; j++) {
+				if (isSourceEntry(branch[j]) && isValidCutPoint(branch[j])) return branch[j].id;
+			}
+		}
+	}
+	const lastSource = [...branch].reverse().find((entry) => isSourceEntry(entry));
+	if (!lastSource) throw new Error("branch has no source entries to compact");
+	return lastSource.id;
+}
+
+/**
+ * Shared compaction preparation: wait for in-flight observers (unless the R5 fast path proves
+ * the wait is a no-op), snap the cutoff to a committed chunk boundary, and render the summary
+ * block from the observation pool plus the long-term tier read live from disk. Used by the
+ * `session_before_compact` hook (pi-initiated / `/om:compact` compactions) and by the
+ * actionable `turn_end` boundary (threshold-triggered mid-run compaction).
+ */
+export async function prepareCompactionDraft(
+	inputs: CompactionPreparationInputs,
+	runtime: Runtime,
+): Promise<CompactionDraft> {
+	const tailTokens = runtime.config.tailTokens;
+	const proposal =
+		inputs.proposedFirstKeptEntryId ?? boundaryTailProposal(inputs.getBranch(), tailTokens);
+
+	// Compute the snap from the CURRENT (pre-wait) branch. The snap only reads committed
+	// chunk boundaries (fixed at entry), so this is safe to do before any wait and lets
+	// us decide whether the wait is needed at all.
+	let branch = inputs.getBranch();
+	let snap = snapCutoff(branch, proposal, tailTokens);
+
+	// R5 fast path: skip the wait when no in-flight observer can affect this compaction
+	// (its chunk lands in the verbatim tail and the snap is stable). Otherwise wait for
+	// observers to settle, then re-read the branch and recompute the snap so just-committed
+	// `om.observations.recorded` entries are folded (the pre-wait branch is stale).
+	const skip = canSkipObserverWait(branch, snap.firstKeptId, snap.tail, tailTokens, runtime.observersInFlight.values());
+	runtime.lastCompactionObserverWait = skip ? "skipped" : "waited";
+	if (!skip) {
+		inputs.notify?.("om: waiting for in-flight observers before folding…", "info");
+		await runtime.whenObserversIdle();
+		branch = inputs.getBranch();
+		snap = snapCutoff(branch, proposal, tailTokens);
+	}
+
+	const snapped = snap.firstKeptId;
+	const projection = buildCompactionProjection(branch, snapped);
+	// Phase B: render the long-term tier live from disk, regenerated each compaction
+	// (throwaway projections — cannot decay). The journey is the running descriptive history
+	// the consolidator maintains; the map is the topic-file index.
+	const journey = readJourney(runtime.memoryRoot);
+	const map = renderMemoryMap(listTopics(runtime.memoryRoot));
+	const summary = renderSummary(journey, map, projection.observations);
+
+	return { summary, firstKeptEntryId: snapped, details: projection.details };
+}
+
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (!runtime.enabled || runtime.config.passive) return undefined;
@@ -123,43 +208,24 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		runtime.compactHookInFlight = true;
 		try {
 			runtime.ensureConfig(ctx.cwd);
-			const tailTokens = runtime.config.tailTokens;
 			const { firstKeptEntryId, tokensBefore } = event.preparation;
-
-			// Compute the snap from the CURRENT (pre-wait) branch. The snap only reads committed
-			// chunk boundaries (fixed at hook entry), so this is safe to do before any wait and lets
-			// us decide whether the wait is needed at all.
-			let branch = (ctx.sessionManager?.getBranch?.() as Entry[] | undefined) ?? (event.branchEntries as Entry[]);
-			let snap = snapCutoff(branch, firstKeptEntryId, tailTokens);
-
-			// R5 fast path: skip the wait when no in-flight observer can affect this compaction
-			// (its chunk lands in the verbatim tail and the snap is stable). Otherwise wait for
-			// observers to settle, then re-read the branch and recompute the snap so just-committed
-			// `om.observations.recorded` entries are folded (pi's `event.branchEntries` is stale).
-			const skip = canSkipObserverWait(branch, snap.firstKeptId, snap.tail, tailTokens, runtime.observersInFlight.values());
-			runtime.lastCompactionObserverWait = skip ? "skipped" : "waited";
-			if (!skip) {
-				if (hasUI) ctx.ui.notify("om: waiting for in-flight observers before folding…", "info");
-				await runtime.whenObserversIdle();
-				branch = (ctx.sessionManager?.getBranch?.() as Entry[] | undefined) ?? (event.branchEntries as Entry[]);
-				snap = snapCutoff(branch, firstKeptEntryId, tailTokens);
-			}
-
-			const snapped = snap.firstKeptId;
-			const projection = buildCompactionProjection(branch, snapped);
-			// Phase B: render the long-term tier live from disk, regenerated each compaction
-			// (throwaway projections — cannot decay). The journey is the running descriptive history
-			// the consolidator maintains; the map is the topic-file index.
-			const journey = readJourney(runtime.memoryRoot);
-			const map = renderMemoryMap(listTopics(runtime.memoryRoot));
-			const summary = renderSummary(journey, map, projection.observations);
-
+			const draft = await prepareCompactionDraft(
+				{
+					getBranch: () =>
+						(ctx.sessionManager?.getBranch?.() as Entry[] | undefined) ?? (event.branchEntries as Entry[]),
+					proposedFirstKeptEntryId: firstKeptEntryId,
+					notify: hasUI
+						? (message, level) => ctx.ui.notify(message, level)
+						: undefined,
+				},
+				runtime,
+			);
 			return {
 				compaction: {
-					summary,
-					firstKeptEntryId: snapped,
+					summary: draft.summary,
+					firstKeptEntryId: draft.firstKeptEntryId,
 					tokensBefore,
-					details: projection.details,
+					details: draft.details,
 				},
 			};
 		} finally {
