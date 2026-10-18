@@ -1,11 +1,15 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AGENT_EXTENSION_PATH, buildWorkerArgv, buildWorkerEnv, modelArg } from "../src/spawn/launch.js";
 import { readObserverResult, runResultPath, runsDir, writeObserverResult } from "../src/spawn/runs.js";
 import { registerObserverTool } from "../agent/observer/tool.js";
+
+// OS-facing paths (argv, env, fs) keep the host's native separators — normalise at the
+// assertion boundary so the expected literal stays POSIX and valid on every platform.
+const posixOf = (p: string) => p.split(sep).join("/");
 
 describe("launch argv + env", () => {
 	const model = { provider: "anthropic" as const, id: "claude-sonnet-4-6", thinking: "low" as const };
@@ -22,7 +26,9 @@ describe("launch argv + env", () => {
 		expect(argv[argv.indexOf("-e") + 1]).toBe(AGENT_EXTENSION_PATH);
 		expect(argv[argv.indexOf("-n") + 1]).toBe("om-observer-x");
 		expect(argv[argv.indexOf("-p") + 1]).toBe("go");
-		expect(AGENT_EXTENSION_PATH.endsWith("/agent/index.ts")).toBe(true);
+		expect(posixOf(AGENT_EXTENSION_PATH).endsWith("/agent/index.ts")).toBe(true);
+		// Guard against an accidental conversion of the OS-facing argv path to posix separators.
+		expect(AGENT_EXTENSION_PATH.endsWith(join("agent", "index.ts"))).toBe(true);
 	});
 
 	it("omits --thinking when no level is configured", () => {
@@ -46,7 +52,7 @@ describe("launch argv + env", () => {
 	});
 
 	it("resolves run paths under the session memory root's .runs", () => {
-		expect(runsDir("/proj/.memory/sess-1")).toBe("/proj/.memory/sess-1/.runs");
+		expect(posixOf(runsDir("/proj/.memory/sess-1"))).toBe("/proj/.memory/sess-1/.runs");
 	});
 });
 

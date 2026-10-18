@@ -63,7 +63,7 @@ describe("listTopics", () => {
 		writeTopic("auth.md", "---\nid: auth\ntitle: Auth\nsummary: a\n---\nbody");
 		const topics = listTopics(root);
 		expect(topics.map((t) => t.filename)).toEqual(["auth.md", "zebra.md"]);
-		expect(topics[0]).toMatchObject({ id: "auth", title: "Auth", summary: "a", path: join(".memory", "sess-1", "auth.md") });
+		expect(topics[0]).toMatchObject({ id: "auth", title: "Auth", summary: "a", path: ".memory/sess-1/auth.md" });
 	});
 
 	it("returns [] when the session memory root does not exist", () => {

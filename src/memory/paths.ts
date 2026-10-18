@@ -11,7 +11,7 @@
  * All writes are atomic (temp + rename) so a reader never sees a half-written file.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 export const INDEX_FILENAME = "INDEX.md";
 /**
@@ -139,7 +139,9 @@ export function listTopics(root: string): Topic[] {
 			continue;
 		}
 		const { front } = parseFrontMatter(content);
-		topics.push({ ...front, path: relative(cwd, join(root, filename)), filename });
+		// Topic paths are rendered artefact content (INDEX.md / memory map) read on any platform,
+		// so they always use POSIX separators regardless of the host OS.
+		topics.push({ ...front, path: relative(cwd, join(root, filename)).split(sep).join("/"), filename });
 	}
 	topics.sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0));
 	return topics;
