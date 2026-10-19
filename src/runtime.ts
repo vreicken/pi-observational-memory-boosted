@@ -58,6 +58,15 @@ export class Runtime {
 	 */
 	readonly pendingEvictions: EvictionSpan[] = [];
 
+	/**
+	 * Omission record: spans THIS process emitted as context_edit drafts at a boundary flush.
+	 * /om:status counts ONLY these — pi's own recovery path appends `context_edit` omissions
+	 * too and they are indistinguishable from OM's on the branch, so a branch-derived tally
+	 * would report evictions OM never performed. In-process like everything else eviction:
+	 * gone on resume, where the tally resets rather than inventing credit.
+	 */
+	readonly evictionRecords: EvictionSpan[] = [];
+
 	/** Guards so compaction trigger + hook never re-enter. */
 	compactInFlight = false;
 	compactHookInFlight = false;

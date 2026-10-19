@@ -15,7 +15,7 @@ import { registerConsolidateCommand } from "../src/commands/consolidate.js";
 import { registerStatusCommand } from "../src/commands/status.js";
 import { evaluateConsolidatorTrigger } from "../src/hooks/consolidator-trigger.js";
 import { Runtime } from "../src/runtime.js";
-import { observation, observationsRecordedEntry, rawMessage, contextEditEntry, type TestEntry } from "./fixtures/session.js";
+import { assistantToolCallMessage, observation, observationsRecordedEntry, rawMessage, contextEditEntry, type TestEntry } from "./fixtures/session.js";
 
 type Notification = { message: string; level?: "info" | "warning" | "error" };
 type UIStub = {
@@ -279,15 +279,49 @@ describe("registerStatusCommand", () => {
 		expect(report).toContain("session cost: $0.0000 (0 runs)");
 	});
 
-	it("reports a branch-local eviction tally from context_edit omissions", async () => {
+	it("reports only OM-appended evictions, never pi's own recovery omissions", async () => {
+		const { pi, commands } = makePi();
+		const runtime = new Runtime();
+		runtime.enabled = true;
+		runtime.configLoaded = true;
+		// Two spans OM itself flushed this process: 3 + 2 entries, ~10k + ~1k tokens.
+		runtime.evictionRecords.push(
+			{ entryIds: ["u1", "a1", "r1"], tokens: 10_000 },
+			{ entryIds: ["u2", "r2"], tokens: 1_000 },
+		);
+		registerStatusCommand(pi, runtime);
+		// A branch carrying a context_edit omission OM never appended (pi's recovery path shape:
+		// _omitRecoveryAttempt targets an assistant message) must contribute NOTHING to the tally.
+		const branch = [
+			rawMessage("u9", "x".repeat(40000)),
+			assistantToolCallMessage("a9"),
+			contextEditEntry("ce-recovery", { targetId: "a9", replacement: null }),
+		];
+		const { ctx, notifications } = makeCtx({
+			sessionManager: {
+				getBranch: () => branch,
+				getEntries: () => [],
+				getSessionId: () => "sess-1",
+			},
+		});
+
+		await commandHandler(commands, "om:status").handler("", ctx as unknown as ExtensionCommandContext);
+
+		const report = notifications[0].message;
+		expect(report).toContain("evictions: 5 entries omitted");
+		expect(report).toContain("~11,000 tok projected-context freed");
+	});
+
+	it("resets the eviction tally when nothing was recorded (e.g. right after a resume)", async () => {
 		const { pi, commands } = makePi();
 		const runtime = new Runtime();
 		runtime.enabled = true;
 		runtime.configLoaded = true;
 		registerStatusCommand(pi, runtime);
+		// Even with omissions ON the branch (pre-resume OM work or pi recovery edits), the
+		// in-process record is empty — the tally must show zeros, not borrowed credit.
 		const branch = [
-			rawMessage("u1", "x".repeat(40000)), // the omitted entry (~10k tokens)
-			rawMessage("u2", "next turn"),
+			rawMessage("u1", "x".repeat(40000)),
 			contextEditEntry("ce1", { targetId: "u1", replacement: null }),
 		];
 		const { ctx, notifications } = makeCtx({
@@ -301,8 +335,7 @@ describe("registerStatusCommand", () => {
 		await commandHandler(commands, "om:status").handler("", ctx as unknown as ExtensionCommandContext);
 
 		const report = notifications[0].message;
-		expect(report).toContain("evictions: 1 entry omitted");
-		expect(report).toMatch(/~10,0\d\d tok projected-context freed/);
+		expect(report).toContain("evictions: 0 entries omitted (~0 tok projected-context freed)");
 	});
 
 	it("falls back to the 'none yet' journey and n/a wait, and reports a live context usage", async () => {

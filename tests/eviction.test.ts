@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	evictableSpansInSlice,
-	evictionStats,
+	evictionRecordStats,
 	filterEvictableSpans,
 	isEditableContextTarget,
 	isCompactionImminent,
@@ -38,6 +38,7 @@ function span(entryIds: string[], branch: TestEntry[]): EvictionSpan {
 
 const BASE_INPUTS: EvictionFlushInputs = {
 	minTokens: 1,
+	tailTokens: 0,
 	windowTokens: 100_000,
 	contextTokens: null,
 	compactAtContextTokens: 1000,
@@ -261,12 +262,65 @@ describe("filterEvictableSpans", () => {
 		expect(kept).toEqual([]);
 	});
 
+	// The double-absence defect (QA run 38ca2b3b): the observation pool reaches the model ONLY
+	// through the compaction block, so evicting a span whose depth is inside the verbatim-tail
+	// window — where the next snap keeps it verbatim instead of folding its covering chunk —
+	// leaves it in neither representation.
 	it("skips everything when compaction is imminent regardless of span quality", () => {
 		const branch = observedTurn();
 		const kept = filterEvictableSpans(branch, [span(["u1", "a1", "r1"], branch)], {
 			...BASE_INPUTS,
 			contextTokens: 99_000,
 			compactAtContextTokens: 100_000,
+		});
+		expect(kept).toEqual([]);
+	});
+
+	// The double-absence defect (QA run 38ca2b3b): the observation pool reaches the model ONLY
+	// through the compaction block, so evicting a span whose depth is inside the verbatim-tail
+	// window — where the next snap keeps the range verbatim instead of folding its covering
+	// chunk — leaves it in neither representation.
+	it("never evicts a span inside the verbatim-tail window (double absence)", () => {
+		// Both spans end inside a 20k-token tail window: the first ~10 tokens from the tip, the
+		// second ~10k. Neither may be omitted.
+		const branch: TestEntry[] = [
+			...observedTurn(),
+			rawMessage("u2l", "second turn"),
+			toolResultMessage("r2l", GIANT),
+			rawMessage("u3l", small),
+		];
+		const kept = filterEvictableSpans(
+			branch,
+			[span(["u1", "a1", "r1"], branch), span(["u2l", "r2l"], branch)],
+			{ ...BASE_INPUTS, tailTokens: 20_000, windowTokens: 40_000, minTokens: 1000 },
+		);
+		expect(kept).toEqual([]);
+	});
+
+	it("evicts only in the healthy band: outside the tail window, inside the shallow window", () => {
+		const branch: TestEntry[] = [
+			...observedTurn(),
+			rawMessage("u2l", "second turn"),
+			toolResultMessage("r2l", GIANT),
+			rawMessage("u3l", small),
+		];
+		// With tailTokens 5k: the first span ends ~10k deep (in band) and is evicted; the second
+		// ends ~10 tokens deep (inside the tail window) and stays verbatim.
+		const kept = filterEvictableSpans(
+			branch,
+			[span(["u1", "a1", "r1"], branch), span(["u2l", "r2l"], branch)],
+			{ ...BASE_INPUTS, tailTokens: 5_000, windowTokens: 40_000, minTokens: 1000 },
+		);
+		expect(kept).toHaveLength(1);
+		expect(kept[0].entryIds).toEqual(["u1", "a1", "r1"]);
+	});
+
+	it(": nothing evicts when the band is empty (tail window deeper than the shallow window)", () => {
+		const branch = observedTurn();
+		const kept = filterEvictableSpans(branch, [span(["u1", "a1", "r1"], branch)], {
+			...BASE_INPUTS,
+			tailTokens: 50_000,
+			windowTokens: 40_000,
 		});
 		expect(kept).toEqual([]);
 	});
@@ -281,20 +335,16 @@ describe("spanEvictionDrafts", () => {
 	});
 });
 
-describe("evictionStats", () => {
-	it("counts omission entries and their target tokens; replacement edits do not count", () => {
-		const branch: TestEntry[] = [
-			...observedTurn(),
-			contextEditEntry("ce1", { targetId: "r1", replacement: null }),
-			contextEditEntry("ce2", { targetId: "a1", replacement: { content: "kept" } }),
-		];
-		const stats = evictionStats(branch as Entry[]);
-
-		expect(stats.count).toBe(1);
-		expect(stats.tokens).toBe(estimateEntryTokens(toolResultMessage("r1", GIANT)));
+describe("evictionRecordStats", () => {
+	it("sums only recorded (OM-appended) omissions; pi's own recovery omissions never appear here", () => {
+		const stats = evictionRecordStats([
+			{ entryIds: ["u1", "a1", "r1"], tokens: 10_000 },
+			{ entryIds: ["u2"], tokens: 10 },
+		]);
+		expect(stats).toEqual({ count: 4, tokens: 10_010 });
 	});
 
-	it("returns zeros on an un-evicted branch", () => {
-		expect(evictionStats(observedTurn() as Entry[])).toEqual({ count: 0, tokens: 0 });
+	it("returns zeros before any flush", () => {
+		expect(evictionRecordStats([])).toEqual({ count: 0, tokens: 0 });
 	});
 });

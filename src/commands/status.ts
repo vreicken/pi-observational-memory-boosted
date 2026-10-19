@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { evictionStats, foldLedger, poolTokens, rawTokensSinceObservationCoverage, sumSessionCost, type Entry } from "../ledger/index.js";
+import { evictionRecordStats, foldLedger, poolTokens, rawTokensSinceObservationCoverage, sumSessionCost, type Entry } from "../ledger/index.js";
 import { listTopics, readJourney } from "../memory/paths.js";
 import { estimateStringTokens } from "../tokens.js";
 import type { Runtime } from "../runtime.js";
@@ -23,7 +23,10 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const topicCount = listTopics(runtime.memoryRoot).length;
 			const journey = readJourney(runtime.memoryRoot);
 			const { costUsd, runs } = sumSessionCost(ctx.sessionManager.getEntries() as Entry[]);
-			const evictions = evictionStats(branch);
+			// Counts ONLY omissions OM appended this process (Runtime.evictionRecords) — pi's own
+			// recovery path appends context_edit omissions too, and branch-derived counting would
+			// report evictions OM never performed. Resets on resume instead of inventing credit.
+			const evictions = evictionRecordStats(runtime.evictionRecords);
 
 			const lines = [
 				`om status`,

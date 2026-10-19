@@ -91,6 +91,7 @@ describe("registerEvictionFlush", () => {
 		liveTokens?: number | null | undefined;
 		compactAtContextTokens?: number;
 		chunkTokens?: number;
+		tailTokens?: number;
 	}): { runtime: Runtime; turn: BoundaryHandler[]; settle: BoundaryHandler[]; notifications: Notification[]; ctx: CtxStub } {
 		const runtime = new Runtime();
 		runtime.enabled = opts.enabled ?? true;
@@ -99,6 +100,9 @@ describe("registerEvictionFlush", () => {
 		runtime.config.evictObservedEntries = opts.flagOn ?? true;
 		if (opts.compactAtContextTokens !== undefined) runtime.config.compactAtContextTokens = opts.compactAtContextTokens;
 		if (opts.chunkTokens !== undefined) runtime.config.chunkTokens = opts.chunkTokens;
+		// Default 0 so the firing tests stay focused on their own guard; the verbatim-tail guard
+		// gets its own tests.
+		runtime.config.tailTokens = opts.tailTokens ?? 0;
 		createdTempRoots.push(mkdtempSync(join(tmpdir(), "om-eviction-")));
 		runtime.memoryRoot = join(createdTempRoots.at(-1)!, ".memory", "sess-1");
 
@@ -208,6 +212,33 @@ describe("registerEvictionFlush", () => {
 		expect(turn[0](turnEvent(), ctx)).toBeDefined();
 		expect(runtime.pendingEvictions).toHaveLength(0);
 		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
+	});
+
+	// The double-absence defect (QA run 38ca2b3b) is a boundary-level property too: the shipped
+	// Runtime default carries tailTokens 20 000, and the pending span ends ~10 tokens from the
+	// tip — the next snap would keep the range verbatim instead of folding its covering chunk.
+	it("never flushes a span inside the verbatim-tail window (the next snap keeps it verbatim)", () => {
+		// Shipped-default tail window (tailTokens 20 000): the span [u1, a1, r1] ends ~10 tokens
+		// from the tip, so the next snap would keep the range verbatim instead of folding its
+		// covering chunk — the omitted span would sit in neither representation.
+		const branch = observedBranch();
+		const { runtime, turn, ctx, notifications } = makeHarness({ branch, tailTokens: 20_000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+
+		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
+		expect(runtime.pendingEvictions).toHaveLength(0); // drained: a tail-window span just rides verbatim
+		expect(runtime.evictionRecords).toHaveLength(0);
+		expect(notifications).toHaveLength(0);
+	});
+
+	it("records what it flushed so /om:status counts only OM-appended omissions", () => {
+		const branch = observedBranch();
+		const { runtime, turn, ctx } = makeHarness({ branch });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+
+		turn[0](turnEvent(), ctx);
+
+		expect(runtime.evictionRecords.map((record) => record.entryIds)).toEqual([["u1", "a1", "r1"]]);
 	});
 
 	it("skips spans whose targets became stale since the commit (no Invalid boundary entries fallout)", () => {
