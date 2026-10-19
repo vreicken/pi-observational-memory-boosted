@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCompactionProjection, renderSummary } from "../src/ledger/index.js";
+import { buildCompactionProjection, isSourceEntry, renderSummary } from "../src/ledger/index.js";
 import { canSkipObserverWait, snapCutoff, snapFirstKeptEntryId } from "../src/hooks/compaction-hook.js";
 import {
+	contextEditEntry,
 	observation,
 	observationsRecordedEntry,
 	rawMessage,
@@ -49,6 +50,26 @@ describe("snapFirstKeptEntryId", () => {
 	it("falls back to pi's proposed firstKeptEntryId when no boundary qualifies", () => {
 		const branch = [rawMessage("raw-1", body), rawMessage("raw-2", body)];
 		expect(snapFirstKeptEntryId(branch, "raw-2", 5)).toBe("raw-2");
+	});
+
+	it("is unaffected by a context_edit omission on the branch (non-source, skips cleanly)", () => {
+		const plain = [
+			rawMessage("raw-1", body),
+			rawMessage("raw-2", body),
+			observationsRecordedEntry("om-1", { observations: [observation("2026-05-02T10:00:01")], coversUpToId: "raw-2" }),
+			rawMessage("raw-3", body),
+			rawMessage("raw-4", body),
+			observationsRecordedEntry("om-2", { observations: [observation("2026-05-02T10:05:00")], coversUpToId: "raw-4" }),
+			rawMessage("raw-5", body),
+		];
+		// The same branch with an omission appended (raw-1 was evicted by the flusher).
+		const evicted = [...plain, contextEditEntry("ce-1", { targetId: "raw-1", replacement: null })];
+
+		// A context_edit is not a source entry, so it is never a boundary or a cut point.
+		expect(isSourceEntry(contextEditEntry("ce-1", { targetId: "raw-1", replacement: null }))).toBe(false);
+		// Same snap with or without the omission: the edit sits after every boundary and changes
+		// no boundary's tail, so the snap is identical.
+		expect(snapFirstKeptEntryId(evicted, "raw-5", 10)).toBe(snapFirstKeptEntryId(plain, "raw-5", 10));
 	});
 });
 
@@ -121,5 +142,20 @@ describe("cutoff ↔ projection integration (no double representation)", () => {
 		const summary = renderSummary(undefined, undefined, projection.observations);
 		expect(summary).toContain("2026-05-02T10:00:01  early");
 		expect(summary).toContain("2026-05-02T10:05:00  late");
+	});
+
+	it("folds only ledger custom entries: an omitted source contributes nothing to the block", () => {
+		const branch = [
+			rawMessage("raw-1", body),
+			observationsRecordedEntry("om-1", { observations: [observation("2026-05-02T10:00:01", { content: "early" })], coversUpToId: "raw-1" }),
+			rawMessage("raw-2", body),
+			contextEditEntry("ce-1", { targetId: "raw-1", replacement: null }),
+		];
+
+		const projection = buildCompactionProjection(branch, "raw-2");
+		// The block is the MemoryDetails blob only — no raw source entry, omitted or otherwise,
+		// can enter it.
+		expect(projection.details).toEqual({ type: "om.folded", version: 1, observations: projection.observations });
+		expect(projection.observations.map((o) => o.content)).toEqual(["early"]);
 	});
 });
