@@ -257,7 +257,7 @@ describe("filterEvictableSpans", () => {
 		expect(kept).toEqual([]);
 	});
 
-	it("skips a span that sits before the compaction cutoff (already folded into the summary)", () => {
+	it("rejects a span whose turn is closed by a compaction entry (spanTerminates, not the kept-tail check)", () => {
 		const branch: TestEntry[] = [
 			...observedTurn(),
 			compactionEntry("c1", { firstKeptEntryId: "r1" }),
@@ -466,6 +466,55 @@ describe("filterEvictableSpans", () => {
 			windowTokens: 100_000,
 			minTokens: 1000,
 		})).toEqual([]);
+	});
+
+	// The existing "before the compaction cutoff" test is satisfied by `spanTerminates` (a
+	// compaction immediately after the span returns false), so the kept-tail check below it never
+	// runs. The check is reachable when the span terminates at a user message and the last
+	// compaction sits AFTER that terminator: then the span may already be inside the summarized
+	// region. These two tests exercise that check as the only discriminator.
+	it("rejects a span already inside the last compaction's summarized region (kept-tail check, not spanTerminates)", () => {
+		const branch: TestEntry[] = [
+			rawMessage("u1", "prompt one"), // span start
+			assistantToolCallMessage("a1"),
+			toolResultMessage("r1", GIANT), // span end
+			rawMessage("u2", small), // terminates the span -> spanTerminates passes
+			compactionEntry("c1", { firstKeptEntryId: "u2" }), // u1..r1 were folded into the summary
+			observationsRecordedEntry("om1", { observations: [observation("2026-05-02T10:00:00")], coversUpToId: "r1" }),
+		];
+		expect(filterEvictableSpans(branch, [span(["u1", "a1", "r1"], branch)], BASE_INPUTS)).toEqual([]);
+
+		// Positive control: the same branch with the compaction keeping the span itself (the span
+		// sits in that compaction's kept tail) is evictable — the kept-tail check is the
+		// discriminator, not the compaction's mere presence.
+		const verbatimBranch: TestEntry[] = [
+			...branch.slice(0, 4),
+			compactionEntry("c1", { firstKeptEntryId: "u1" }),
+			branch[5],
+		];
+		const kept = filterEvictableSpans(verbatimBranch, [span(["u1", "a1", "r1"], verbatimBranch)], BASE_INPUTS);
+		expect(kept).toHaveLength(1);
+	});
+
+	// `coveringBoundaryIsSnapCandidate`'s no-qualifying-entry path: the covering boundary is the
+	// last source entry on the branch, with only the recorded (non-source) entry behind it. The
+	// span itself still terminates — its terminator sits inside the slice — so this is the only
+	// guard that rejects it.
+	it("rejects a span whose covering boundary has no source entry after it (never a snap candidate)", () => {
+		const branch: TestEntry[] = [
+			rawMessage("u1", "prompt one"), // span start
+			toolResultMessage("r1", GIANT), // span end; u2 terminates it from inside the slice
+			rawMessage("u2", small),
+			toolResultMessage("r2", small), // covering boundary — last source entry on the branch
+			observationsRecordedEntry("om1", { observations: [observation("2026-05-02T10:00:00")], coversUpToId: "r2" }),
+		];
+		expect(filterEvictableSpans(branch, [span(["u1", "r1"], branch, "r2")], BASE_INPUTS)).toEqual([]);
+
+		// Positive control: a user message after the boundary makes it a real snap candidate.
+		const candidateBranch: TestEntry[] = [...branch, rawMessage("u3", small)];
+		const kept = filterEvictableSpans(candidateBranch, [span(["u1", "r1"], candidateBranch, "r2")], BASE_INPUTS);
+		expect(kept).toHaveLength(1);
+		expect(kept[0].coversUpToId).toBe("r2");
 	});
 
 	it(": nothing evicts when the band is empty (tail window deeper than the shallow window)", () => {
