@@ -9,14 +9,18 @@
  * `replacement: null` — append-only, branch-relative, raw history untouched, zero model
  * involvement.
  *
- * The invariant that makes this safe by construction: an omitted span is one that a committed
- * `om.observations.recorded` chunk observed in full. Coverage is therefore decided where the
- * exact slice is known — observer commit — and candidates are tracked in-process
- * (`Runtime.pendingEvictions`). Nothing is inferred from bare ledger watermarks: parallel
- * observers commit out of order and failed/zero-observation chunks commit no record, so a
- * later watermark does NOT imply earlier entries were observed. After a resume the in-process
- * knowledge is gone and eviction degrades conservatively to a no-op for pre-resume slices
- * (they stay verbatim until compaction — deferred savings, never unsafety).
+ * The invariant that makes this safe by construction — omitted-but-unobserved must never be
+ * possible, and omitted-but-only-verbally-presented must never be possible either. Coverage is
+ * therefore decided where the exact slice is known — observer commit — and candidates are
+ * tracked in-process (`Runtime.pendingEvictions`); and the depth guards at flush time keep the
+ * span OUTSIDE the verbatim-tail window (`tailTokens`): the observation pool reaches the model
+ * ONLY through a compaction summary (OM injects no context of its own), so a span whose
+ * covering chunk sits in the tail would lose its raw representation without its distilled one
+ * ever reaching the model — omitted in both representations. Never inferred from bare ledger
+ * watermarks: parallel observers commit out of order and failed/zero-observation chunks commit
+ * no record, so a later watermark does NOT imply earlier entries were observed. After a resume
+ * the in-process knowledge is gone and eviction degrades conservatively to a no-op for
+ * pre-resume slices (they stay verbatim until compaction — deferred savings, never unsafety).
  */
 
 import { estimateEntryTokens } from "../tokens.js";
@@ -43,11 +47,6 @@ export type ContextEditBranchEntry = Entry & {
 
 export function isContextEditEntry(entry: Entry): entry is ContextEditBranchEntry {
 	return entry.type === "context_edit";
-}
-
-/** A branch entry whose `context_edit` omission has been appended (latest edit per target wins). */
-export function isContextOmission(entry: Entry): boolean {
-	return isContextEditEntry(entry) && entry.replacement === null;
 }
 
 /**
@@ -147,6 +146,8 @@ export function evictableSpansInSlice(
 export type EvictionFlushInputs = {
 	/** Span raw-token total that must be reached before an omission is worth its read-back. */
 	minTokens: number;
+	/** Depth of the verbatim tail: spans ending CLOSER to the tip than this stay verbatim. */
+	tailTokens: number;
 	/** Max raw tokens allowed between the span's end and the branch tip (shallowness guard). */
 	windowTokens: number;
 	/** Live context usage (or the raw-token fallback); null → imminence guard cannot fire. */
@@ -196,9 +197,14 @@ function spanTerminates(branch: Entry[], lastIndex: number): boolean {
  *  4. no member already carries a context_edit on this branch (no duplicate omissions);
  *  5. span still starts at a user message and still terminates here after the re-walk;
  *  6. span raw-token total still ≥ minTokens (recomputed from the branch);
- *  7. span end within windowTokens of the branch tip (the shallow guard that bounds the
+ *  7. span end OUTSIDE the verbatim-tail window: depth from the tip ≥ tailTokens. The depth
+ *     must be measured with the SAME raw gauge the compaction snap uses: the span must sit in
+ *     the region the next compaction will FOLD, because the observation pool reaches the model
+ *     only through the compaction block — an evicted span kept verbatim at the next snap is in
+ *     NEITHER representation (the double-absence defect QA proved on run 38ca2b3b);
+ *  8. span end within windowTokens of the branch tip (the shallow guard that bounds the
  *     one-time full-price cache-suffix re-read — see README);
- *  8. span does not sit before the compaction cutoff / under the last compaction's summarized
+ *  9. span does not sit before the compaction cutoff / under the last compaction's summarized
  *     region (spanTerminates + the kept-tail check below).
  *
  * `span.tokens` on the returned spans is the branch-accurate recompute.
@@ -252,7 +258,9 @@ export function filterEvictableSpans(
 		let tokens = 0;
 		for (const index of memberIndexes) tokens += estimateEntryTokens(branch[index]);
 		if (tokens < inputs.minTokens) continue;
-		if (rawTokensAfterIndex(branch, lastIndex) > inputs.windowTokens) continue;
+		const depthFromTip = rawTokensAfterIndex(branch, lastIndex);
+		if (depthFromTip < inputs.tailTokens) continue;
+		if (depthFromTip > inputs.windowTokens) continue;
 
 		kept.push({ entryIds: [...span.entryIds], tokens });
 	}
@@ -273,20 +281,20 @@ export function spanEvictionDrafts(span: EvictionSpan): ContextEditBranchDraft[]
 }
 
 /**
- * Eviction surface for /om:status, folded from the CURRENT branch: how many entries this
- * branch has omitted from projected context and roughly how many verbatim tokens that frees.
- * Branch-local by design: under /tree the numbers roll back with the branch, mirroring how
- * the omissions themselves do.
+ * Eviction surface for /om:status, folded from what THIS process appended: the flusher records
+ * every span it emitted as a draft into `Runtime.evictionRecords`, and only those are counted.
+ * Branch-derived counting is NOT safe here — pi's own recovery path appends `context_edit`
+ * entries with `replacement: null` too (`_omitRecoveryAttempt`), indistinguishable from OM's
+ * on the branch, and would be reported as OM evictions. In-process records also degrade
+ * consistently: after a resume they (like the slice knowledge) are gone and the tally resets
+ * rather than inventing credit.
  */
-export function evictionStats(branch: Entry[]): { count: number; tokens: number } {
-	const indexes = entryIndexById(branch);
+export function evictionRecordStats(records: readonly EvictionSpan[]): { count: number; tokens: number } {
 	let count = 0;
 	let tokens = 0;
-	for (const entry of branch) {
-		if (!isContextEditEntry(entry) || entry.replacement !== null) continue;
-		count++;
-		const targetIndex = indexes.get(entry.targetId);
-		if (targetIndex !== undefined) tokens += estimateEntryTokens(branch[targetIndex]);
+	for (const record of records) {
+		count += record.entryIds.length;
+		tokens += record.tokens;
 	}
 	return { count, tokens };
 }

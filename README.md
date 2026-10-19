@@ -121,7 +121,7 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
     "observerConcurrency": 4,
     "evictObservedEntries": false,       // mid-cycle eviction of fully-observed oversized spans
     "evictionMinTokens": 5000,           // span size below which eviction is skipped
-    "evictionWindowTokens": 40000,       // only near-tail spans evict (see cache economics)
+    "evictionWindowTokens": 40000,       // only spans in the [tailTokens, evictionWindowTokens] depth band evict
     "models": {
       "observer":     { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "low" },
       "consolidator": { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "medium" }
@@ -142,19 +142,19 @@ moves. Between compactions, raw content the observers have **already fully disti
 chunk commits a `coversUpToId` watermark) rides verbatim — re-read at 0.1× cache-read price on
 every single request for the rest of the cycle. Mid-cycle eviction closes that gap **without a
 compaction and without any model call**: when a whole turn-span is (a) covered by a committed
-observation chunk, (b) oversized (`evictionMinTokens`), and (c) shallow (`evictionWindowTokens`
-from the branch tip), the orchestrator returns `context_edit` drafts (`replacement: null`) at
-the next actionable boundary and those entries simply stop appearing in projected context.
+observation chunk, (b) oversized (`evictionMinTokens`), (c) OUTSIDE the verbatim-tail window
+(deeper than `tailTokens` from the branch tip), and (d) shallow (`evictionWindowTokens`), the
+orchestrator returns `context_edit` drafts (`replacement: null`) at the next actionable
+boundary and those entries simply stop appearing in projected context.
 
 **Cache economics.** An omission invalidates the provider cache prefix AT the omission point:
 the suffix behind it is re-read at full price ONE time on the next request, and every
-subsequent request saves 0.1× on the omitted bytes until compaction. Because flushes are prompt
-(and candidate spans are whole committed-observer slices), the invalidated suffix is small —
-roughly the unobserved backlog plus the verbatim tail. The `evictionWindowTokens` guard is what
-keeps it that way: it excludes stale spans whose omission would force a larger full-price
-re-read than the bytes saved. Eviction is metadata-only: no `om.cost` entries, no compaction
-entry, no LLM involvement anywhere. The one-time suffix re-read is the whole cost; the window
-guard bounds it so evictions always pay for themselves in cache-read terms.
+subsequent request saves 0.1× on the omitted bytes until compaction. The depth band makes that
+one-time cost an honest, flat-bounded figure: the omission point always sits between
+`tailTokens` and `evictionWindowTokens` tokens from the branch tip, so the re-read is bounded
+by `evictionWindowTokens` plus the unobserved backlog — the shallow guard exists exactly so no
+omission ever forces a full-price re-read larger than the bytes it frees. Eviction is
+metadata-only: no `om.cost` entries, no compaction entry, no LLM involvement anywhere.
 
 **Safety rules.**
 - Coverage is decided where the slice is exactly known — at observer commit — never inferred
@@ -163,6 +163,12 @@ guard bounds it so evictions always pay for themselves in cache-read terms.
   were observed.
 - Whole spans only: an assistant tool call is never omitted without its result; a span
   straddling the committed watermark is left verbatim.
+- **A span inside the verbatim-tail window is never evicted.** The observation pool reaches the
+  model ONLY through the compaction block (OM injects no context of its own); a span whose
+  covering chunk will still sit in the kept verbatim tail at the next snap would lose its raw
+  representation without gaining the distilled one — absent from both. The guard measures the
+  span's end depth with the same raw gauge the snap uses (`tailTokens` from the branch tip),
+  so eviction targets exactly the region the next compaction will FOLD.
 - Nothing is appended without pre-validation (targets still on the active branch and of an
   editable type), so a stale target can never cause pi to drop other extensions' boundary
   drafts.
@@ -170,7 +176,12 @@ guard bounds it so evictions always pay for themselves in cache-read terms.
   pre-resume slices (they ride verbatim until the next compaction — deferred savings, never
   lost content, since raw history is immutable and untouched).
 - Raw session log entries are never modified; omissions are branch-relative projections
-  (`/tree` reveals the original again), deduplicated per target, and surface in `/om:status`.
+  (`/tree` reveals the original again), deduplicated per target, and surface in `/om:status`
+  ("evictions: N entries omitted (~X tok projected-context freed)"). The tally counts ONLY
+  omissions OM itself appended this process (`Runtime.evictionRecords`): pi's own recovery
+  path appends `context_edit` omissions too and they are indistinguishable on the branch, so
+  counting the branch would report evictions OM never performed. The tally resets on resume
+  rather than inventing credit.
 
 ## Development
 

@@ -24,7 +24,7 @@ import type {
 	TurnEndEvent,
 	TurnEndEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { filterEvictableSpans, rawTokensSinceLastCompaction, spanEvictionDrafts, type Entry } from "../ledger/index.js";
+import { filterEvictableSpans, rawTokensSinceLastCompaction, spanEvictionDrafts, type EvictionSpan, type Entry } from "../ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
 type FlushContext = ExtensionContext & {
@@ -38,7 +38,7 @@ export function evaluateEvictionFlush(
 	runtime: Runtime,
 	event: Pick<BoundaryEvent, "entries">,
 	ctx: FlushContext,
-): SessionBoundaryDraft[] | undefined {
+): { entries: SessionBoundaryDraft[]; spans: EvictionSpan[] } | undefined {
 	// Outermost guards first: no eviction unless om is on, triggers are live, and the flag is on.
 	if (!runtime.enabled || runtime.config.passive || !runtime.config.evictObservedEntries) return;
 	if (runtime.pendingEvictions.length === 0) return;
@@ -53,6 +53,7 @@ export function evaluateEvictionFlush(
 	const pending = runtime.pendingEvictions.splice(0);
 	const spans = filterEvictableSpans(branch, pending, {
 		minTokens: runtime.config.evictionMinTokens,
+		tailTokens: runtime.config.tailTokens,
 		windowTokens: runtime.config.evictionWindowTokens,
 		contextTokens,
 		compactAtContextTokens: runtime.config.compactAtContextTokens,
@@ -66,25 +67,27 @@ export function evaluateEvictionFlush(
 	// keep their position; we never set `continue` — omission is metadata-only and asks for no
 	// continuation turn.
 	const entries: SessionBoundaryDraft[] = [...(event?.entries ?? []), ...drafts];
-	return entries;
+	return { entries, spans };
 }
 
 export function registerEvictionFlush(pi: ExtensionAPI, runtime: Runtime): void {
 	const handler = (event: BoundaryEvent, ctx: FlushContext): TurnEndEventResult | void => {
-		const entries = evaluateEvictionFlush(runtime, event, ctx);
-		if (!entries) return;
+		const flushed = evaluateEvictionFlush(runtime, event, ctx);
+		if (!flushed) return;
+
+		// Omission record drives /om:status, so the tally counts exactly what OM appended —
+		// never pi's own recovery omissions, and never another extension's drafts.
+		runtime.evictionRecords.push(...flushed.spans);
 
 		if (ctx.hasUI && ctx.ui) {
-			// Only this flusher produces context_edit drafts, so counting them over the chained
-			// boundary set is exact — including when another extension joined the dispatch.
-			const omitted = entries.filter((entry) => entry.type === "context_edit").length;
+			const omitted = flushed.spans.reduce((total, span) => total + span.entryIds.length, 0);
 			runtime.queueToast(
 				`om: evicted ${omitted} entr${omitted === 1 ? "y" : "ies"} from projected context (observed + oversized)`,
 				"info",
 				ctx.ui.notify.bind(ctx.ui),
 			);
 		}
-		return { entries };
+		return { entries: flushed.entries };
 	};
 	pi.on("turn_end", handler as never);
 	pi.on("agent_before_settle", handler as never);
