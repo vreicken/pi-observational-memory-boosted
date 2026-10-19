@@ -24,7 +24,7 @@
  */
 
 import { estimateEntryTokens } from "../tokens.js";
-import type { Entry } from "./types.js";
+import { isObservationsRecordedEntry, type Entry } from "./types.js";
 import {
 	entryIndexById,
 	findLastCompactionIndex,
@@ -213,8 +213,9 @@ function coveringBoundaryIsSnapCandidate(branch: Entry[], coversIndex: number): 
 
 /**
  * Re-evaluate committed (in-process) eviction candidates against the LIVE branch and keep only
- * those that are currently safe and worthwhile. Load-bearing order of rejections — all of
- * them are conservative (an eviction that is dropped merely rides verbatim until compaction):
+ * those that are currently safe and worthwhile. The checks are CONJUNCTIVE and applied in
+ * code order below (the numbers are reference labels, not an execution order); a dropped span
+ * merely rides verbatim until compaction — never unsafety:
  *
  *  1. compaction imminent → skip everything;
  *  2. every member still on the ACTIVE branch (stale /tree stray → drop);
@@ -223,6 +224,12 @@ function coveringBoundaryIsSnapCandidate(branch: Entry[], coversIndex: number): 
  *     extensions' drafts in the dispatch);
  *  4. no member already carries a context_edit on this branch (no duplicate omissions);
  *  5. span still starts at a user message and still terminates here after the re-walk;
+ *  5b. the covering chunk's committed `om.observations.recorded` entry must still be on the
+ *     ACTIVE branch: coverage was asserted once at commit time, and a /tree rewind can strand
+ *     that record on an abandoned branch while the boundary entries survive on the active one
+ *     — the record is then unreachable (the fold iterates branch entries only) and the
+ *     observer clock will never re-observe the rewound slice (the in-process dispatch marker
+ *     still resolves), so the span can never reach the model no matter what;
  *  6. span raw-token total still ≥ minTokens (recomputed from the branch);
  *  7. span end OUTSIDE the verbatim-tail window, measured at the COVERING CHUNK's committed
  *     boundary (`coversUpToId`) — not at the span end. The fold includes an
@@ -264,6 +271,20 @@ export function filterEvictableSpans(
 
 	const kept: EvictionSpan[] = [];
 
+	// Covering-chunk presence on the LIVE branch: coverage was asserted once, at commit time —
+	// a /tree rewind onto a branch where the boundary entries survive but the
+	// `om.observations.recorded` entry does not leaves the observation unreachable (the fold
+	// iterates branch entries only, so it can never reach the model), and the observer clock
+	// never re-observes the rewound slice because the in-process dispatch marker still resolves
+	// on the branch. Requirement (review pass 3): the committed record that covers the span
+	// must still be on the ACTIVE branch at flush time, or there is nothing the odomitted span
+	// can fall back to.
+	const coveringChunks = new Set<string>();
+	for (const entry of branch) {
+		if (!isObservationsRecordedEntry(entry)) continue;
+		coveringChunks.add(entry.data.coversUpToId);
+	}
+
 	for (const span of pending) {
 		const memberIndexes: number[] = [];
 		let valid = true;
@@ -283,9 +304,11 @@ export function filterEvictableSpans(
 		if (!isUserMessage(branch[memberIndexes[0]])) continue;
 		if (!spanTerminates(branch, lastIndex)) continue;
 
-		// Safety guard (steps 7–8): the tail depth anchors at the covering chunk's committed
-		// boundary, and that boundary must be a snap candidate — only then is the fold of its
-		// observation guaranteed by the snap's selection rule.
+		// Safety guard (steps 5b–8): the committed record that covers the span must still be on
+		// the ACTIVE branch (see coveringChunks above / AC-2 coverage clause); the tail depth
+		// anchors at the covering chunk's committed boundary, and that boundary must be a snap
+		// candidate — only then is the fold of its observation guaranteed by the snap's rule.
+		if (!coveringChunks.has(span.coversUpToId)) continue;
 		const coversIndex = indexes.get(span.coversUpToId);
 		if (coversIndex === undefined) continue;
 		if (!coveringBoundaryIsSnapCandidate(branch, coversIndex)) continue;

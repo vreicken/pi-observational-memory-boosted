@@ -160,7 +160,11 @@ metadata-only: no `om.cost` entries, no compaction entry, no LLM involvement any
 - Coverage is decided where the slice is exactly known — at observer commit — never inferred
   from bare ledger watermarks: parallel observers commit out of order and failed/
   zero-observation chunks commit no record, so a later watermark does not imply earlier entries
-  were observed.
+  were observed. And it is RE-checked at flush time: the covering chunk's committed
+  `om.observations.recorded` entry must still be on the ACTIVE branch (a `/tree` rewind can
+  strand it on an abandoned branch while its boundary entries survive there; the fold reads
+  branch entries only, and the observer clock will not re-observe the rewound slice — so
+  without this check the span could be evicted with nothing able to reach the model).
 - Whole spans only: an assistant tool call is never omitted without its result; a span
   straddling the committed watermark is left verbatim.
 - **A span inside the verbatim-tail window is never evicted.** The observation pool reaches the

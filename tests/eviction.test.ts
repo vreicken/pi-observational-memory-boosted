@@ -187,7 +187,12 @@ describe("isCompactionImminent", () => {
 
 describe("filterEvictableSpans", () => {
 	it("keeps an eligible committed span with branch-accurate tokens", () => {
-		const branch = observedTurn();
+		// A committed slice needs its committed RECORD on the branch (the coverage the span
+		// relies on is the recorded entry, not just the boundary entries).
+		const branch: TestEntry[] = [
+			...observedTurn(),
+			observationsRecordedEntry("om1", { observations: [observation("2026-05-02T09:00:00")], coversUpToId: "r1" }),
+		];
 		const kept = filterEvictableSpans(branch, [span(["u1", "a1", "r1"], branch)], BASE_INPUTS);
 
 		expect(kept).toHaveLength(1);
@@ -310,6 +315,7 @@ describe("filterEvictableSpans", () => {
 			rawMessage("u2l", "second turn"),
 			toolResultMessage("r2l", GIANT),
 			rawMessage("u3l", small),
+			observationsRecordedEntry("om1", { observations: [observation("2026-05-02T09:00:00")], coversUpToId: "r1" }),
 		];
 		// With tailTokens 5k: the first span ends ~10k deep (in band) and is evicted; the second
 		// ends ~10 tokens deep (inside the tail window) and stays verbatim.
@@ -404,6 +410,62 @@ describe("filterEvictableSpans", () => {
 			tailTokens: 0,
 		});
 		expect(kept).toEqual([]);
+	});
+
+	// Coverage was asserted once at commit time — but a /tree rewind can strand the covering
+	// chunk's `om.observations.recorded` entry on an ABANDONED branch while every boundary entry
+	// survives on the active one. The fold iterates branch entries only, so the observation can
+	// never reach the model there, and the observer clock will not re-observe the rewound slice
+	// (the in-process dispatch marker still resolves on the branch). So the flush must re-check
+	// coverage against the ACTIVE branch (review pass 3) — or the span is evicted and sits in
+	// neither representation forever.
+	it("rejects a span whose covering committed record is no longer on the active branch (rewind)", () => {
+		const rewindBranch: TestEntry[] = [
+			rawMessage("u1", "prompt one"), // span starts here
+			assistantToolCallMessage("a1"),
+			toolResultMessage("r2", GIANT), // the span ends here; u3 terminates the turn
+			rawMessage("u3", small),
+			toolResultMessage("r3", GIANT), // covering boundary entry (still on this branch)
+			rawMessage("u4", small), // valid cut point after the boundary → snap candidate
+			toolResultMessage("r4", "z".repeat(84_000)), // ~21k tail filler → depth(r3) ≥ 20k
+			rawMessage("u5", small),
+		];
+		// The masking fact: every member is editable, the covering boundary is a candidate, and
+		// its depth clears the band — the only thing missing is the committed record itself.
+		const inputs = { ...BASE_INPUTS, tailTokens: 20_000, windowTokens: 100_000, minTokens: 1000 };
+		expect(filterEvictableSpans(rewindBranch, [span(["u1", "a1", "r2"], rewindBranch, "r3")], inputs)).toEqual([]);
+
+		// Positive control: the SAME branch with the committed record back on it is evictable —
+		// the rewrite must be the discriminator, not some other guard.
+		const liveBranch: TestEntry[] = [
+			...rewindBranch,
+			observationsRecordedEntry("omB", { observations: [observation("2026-05-02T18:00:00")], coversUpToId: "r3" }),
+		];
+		const kept = filterEvictableSpans(liveBranch, [span(["u1", "a1", "r2"], rewindBranch, "r3")], inputs);
+		expect(kept).toHaveLength(1);
+		expect(kept[0].coversUpToId).toBe("r3");
+	});
+
+	it("treats an invalid (zero-observation) recorded entry as no coverage at all", () => {
+		// isObservationsRecordedEntry validates data: a commit with an empty observations array
+		// does not count — the observer wrote nothing that could reach the model through it.
+		const branch: TestEntry[] = [
+			rawMessage("u1", "prompt one"),
+			assistantToolCallMessage("a1"),
+			toolResultMessage("r2", GIANT),
+			rawMessage("u3", small),
+			toolResultMessage("r3", GIANT),
+			rawMessage("u4", small),
+			toolResultMessage("r4", "z".repeat(84_000)),
+			rawMessage("u5", small),
+			observationsRecordedEntry("omBad", { observations: [], coversUpToId: "r3" }),
+		];
+		expect(filterEvictableSpans(branch, [span(["u1", "a1", "r2"], branch, "r3")], {
+			...BASE_INPUTS,
+			tailTokens: 20_000,
+			windowTokens: 100_000,
+			minTokens: 1000,
+		})).toEqual([]);
 	});
 
 	it(": nothing evicts when the band is empty (tail window deeper than the shallow window)", () => {

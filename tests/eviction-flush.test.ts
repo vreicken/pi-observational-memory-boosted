@@ -60,14 +60,21 @@ type BoundaryHandler = (
 // The span [u1, a1, r1] must sit OUTSIDE the verbatim-tail window to be evictable, so the
 // branch carries a ~20k-token tail behind it: depth from the tip at r1 is ~20010, inside the
 // eligible band [tailTokens, evictionWindowTokens]. The firing tests therefore run under the
-// shipped default tail window, not under a disabled guard.
-function observedBranch(): TestEntry[] {
-	return [
+// shipped default tail window, not under a disabled guard. With `withRecord` the branch also
+// carries the committed record for the span's covering chunk — without it the coverage the
+// span relies on is not on the branch (e.g. rewound away) and the flush must reject.
+function observedBranch(withRecord = true): TestEntry[] {
+	const base: TestEntry[] = [
 		rawMessage("u1", "find the biggest file"),
 		assistantToolCallMessage("a1", { toolName: "bash" }),
 		toolResultMessage("r1", GIANT),
 		rawMessage("u2", "next turn"),
 		toolResultMessage("tail", TAIL),
+	];
+	if (!withRecord) return base;
+	return [
+		...base,
+		observationsRecordedEntry("om1", { observations: [observation("2026-05-02T10:00:00")], coversUpToId: "r1" }),
 	];
 }
 
@@ -79,6 +86,7 @@ function shallowBranch(): TestEntry[] {
 		assistantToolCallMessage("a1", { toolName: "bash" }),
 		toolResultMessage("r1", GIANT),
 		rawMessage("u2", "next turn"),
+		observationsRecordedEntry("om1", { observations: [observation("2026-05-02T10:00:00")], coversUpToId: "r1" }),
 	];
 }
 
@@ -345,11 +353,26 @@ describe("observer commit selects eviction candidates from the exact committed s
 		// default chunk budget, and a 10k chunk clock would fire a second observer for it.
 		runtime.config.chunkTokens = 15_000;
 
-		const branch = observedBranch();
+		// Record-less branch: the record arrives only when THIS run's commit lands (via the
+		// appendEntry stub that grows the branch), matching the real commit sequence.
+		const branch = observedBranch(false);
 		const appended: Array<{ customType: string; data: unknown }> = [];
 		const pi = {
 			on: () => {},
-			appendEntry: (customType: string, data: unknown) => appended.push({ customType, data }),
+			// Like the real master, the commit GROWS the branch so later clock reads see the
+			// committed record. (With the record pre-seeded in the stub the watermark would
+			// shift the dispatched slice in selectSourceSlice — not the shape under test.)
+			appendEntry: (customType: string, data: unknown) => {
+				appended.push({ customType, data });
+				(branch as TestEntry[]).push({
+					type: "custom",
+					id: `rec-${appended.length}`,
+					parentId: null,
+					timestamp: "2026-05-02T10:00:00.000Z",
+					customType,
+					data,
+				});
+			},
 		} as unknown as ExtensionAPI;
 
 		const ctx = {
