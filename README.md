@@ -59,6 +59,13 @@ consolidator draining the oldest observations into durable per-session memory fi
   which already travels with the fork). The orchestrator owns `INDEX.md` and re-renders it from
   topic front-matter after each run; the consolidator touches `<topic>.md` files plus
   `JOURNEY.md`, via its own `read`/`write`/`edit`/`ls`/`grep` tools scoped to the session dir.
+- **Mid-cycle eviction** (optional, `evictObservedEntries`, default off): between compactions,
+  raw content that observers have **already fully distilled** still rides verbatim in projected
+  context (0.1× per-request cache-read). With the flag on, once a whole turn-span
+  (user message → next turn boundary) is covered by a committed observation chunk, the
+  orchestrator omits it from future provider context via an append-only `context_edit`
+  omission at the next actionable boundary. Deterministic and script-owned; see
+  [Mid-cycle eviction](#mid-cycle-eviction).
 - **Journey** (`.memory/<session>/JOURNEY.md`): a single, whole-project, purely **descriptive** prose
   history of how the work got to its current state, maintained by the consolidator and pushed
   into every compaction block for **orientation** (not recall, not instructions). It is
@@ -92,7 +99,7 @@ folds each run into an `om.cost` ledger entry.
 | Command | Effect |
 |---|---|
 | `/om`, `/om on`, `/om off` | The per-session on/off gate |
-| `/om:status` | Workers in flight, active observation count, next-observer progress, pool/consolidator state, topic-file count, journey size, context usage, **session cost**, last error |
+| `/om:status` | Workers in flight, active observation count, next-observer progress, pool/consolidator state, **evictions (entries omitted / tokens freed)**, topic-file count, journey size, context usage, **session cost**, last error |
 | `/om:compact` | Force a compaction now (ignores the threshold) |
 | `/om:consolidate` | Force a consolidation now (ignores the pool threshold) |
 
@@ -112,6 +119,9 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
     "tailTokens": 20000,                 // verbatim tail; snaps to a chunk boundary
     "journeyTargetTokens": 1000,         // pushed JOURNEY.md size; compress oldest segments past this
     "observerConcurrency": 4,
+    "evictObservedEntries": false,       // mid-cycle eviction of fully-observed oversized spans
+    "evictionMinTokens": 5000,           // span size below which eviction is skipped
+    "evictionWindowTokens": 40000,       // only near-tail spans evict (see cache economics)
     "models": {
       "observer":     { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "low" },
       "consolidator": { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "medium" }
@@ -124,6 +134,43 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
 
 `PI_OM_PASSIVE=1` forces `passive` (disables all triggers) for clean `/tree` testing.
 `passive` is a power-user setting distinct from the on/off gate.
+
+## Mid-cycle eviction
+
+Compaction compresses context at the `compactAtContextTokens` cutoff and nothing before it
+moves. Between compactions, raw content the observers have **already fully distilled** (each
+chunk commits a `coversUpToId` watermark) rides verbatim — re-read at 0.1× cache-read price on
+every single request for the rest of the cycle. Mid-cycle eviction closes that gap **without a
+compaction and without any model call**: when a whole turn-span is (a) covered by a committed
+observation chunk, (b) oversized (`evictionMinTokens`), and (c) shallow (`evictionWindowTokens`
+from the branch tip), the orchestrator returns `context_edit` drafts (`replacement: null`) at
+the next actionable boundary and those entries simply stop appearing in projected context.
+
+**Cache economics.** An omission invalidates the provider cache prefix AT the omission point:
+the suffix behind it is re-read at full price ONE time on the next request, and every
+subsequent request saves 0.1× on the omitted bytes until compaction. Because flushes are prompt
+(and candidate spans are whole committed-observer slices), the invalidated suffix is small —
+roughly the unobserved backlog plus the verbatim tail. The `evictionWindowTokens` guard is what
+keeps it that way: it excludes stale spans whose omission would force a larger full-price
+re-read than the bytes saved. Eviction is metadata-only: no `om.cost` entries, no compaction
+entry, no LLM involvement anywhere. The one-time suffix re-read is the whole cost; the window
+guard bounds it so evictions always pay for themselves in cache-read terms.
+
+**Safety rules.**
+- Coverage is decided where the slice is exactly known — at observer commit — never inferred
+  from bare ledger watermarks: parallel observers commit out of order and failed/
+  zero-observation chunks commit no record, so a later watermark does not imply earlier entries
+  were observed.
+- Whole spans only: an assistant tool call is never omitted without its result; a span
+  straddling the committed watermark is left verbatim.
+- Nothing is appended without pre-validation (targets still on the active branch and of an
+  editable type), so a stale target can never cause pi to drop other extensions' boundary
+  drafts.
+- After a resume the in-process slice knowledge is gone: eviction conservatively no-ops for
+  pre-resume slices (they ride verbatim until the next compaction — deferred savings, never
+  lost content, since raw history is immutable and untouched).
+- Raw session log entries are never modified; omissions are branch-relative projections
+  (`/tree` reveals the original again), deduplicated per target, and surface in `/om:status`.
 
 ## Development
 

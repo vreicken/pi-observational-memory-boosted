@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { assignObservationTimestamps } from "../ids.js";
 import {
+	evictableSpansInSlice,
 	entryIndexForId,
 	foldLedger,
 	latestCoverageMarkerId,
@@ -167,6 +168,16 @@ async function dispatchObserver(
 
 		if (observations.length > 0) {
 			pi.appendEntry(OM_OBSERVATIONS_RECORDED, { observations, coversUpToId });
+			// Mid-cycle eviction selection (evictObservedEntries, default off): the exact committed
+			// slice is only known HERE — a chunk that committed >=1 observation observed its whole
+			// slice, so spans inside it are covered by construction. Coverage is never inferred from
+			// the ledger alone: parallel observers commit out of order and failed/zero-observation
+			// chunks commit nothing, so a later watermark does not imply earlier entries were seen.
+			// Candidates are held in-process and drained by the next boundary flush; after a resume
+			// the list is gone and eviction conservatively no-ops for pre-resume slices.
+			if (runtime.config.evictObservedEntries) {
+				runtime.pendingEvictions.push(...evictableSpansInSlice(branch, slice.entries, runtime.config.evictionMinTokens));
+			}
 		}
 		runtime.status.workerDone(runId, observations.length);
 		runtime.refreshFooterGauges(ctx.sessionManager.getBranch(), ctx.getContextUsage?.()?.tokens ?? null);
