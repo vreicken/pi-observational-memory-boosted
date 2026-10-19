@@ -33,6 +33,7 @@ import { spanEvictionDrafts } from "../src/ledger/eviction.js";
 import { Runtime } from "../src/runtime.js";
 import {
 	assistantToolCallMessage,
+	contextEditEntry,
 	rawMessage,
 	toolResultMessage,
 	observationsRecordedEntry,
@@ -148,19 +149,19 @@ describe("registerEvictionFlush", () => {
 
 	it("does nothing while om is disabled", () => {
 		const { runtime, turn, ctx } = makeHarness({ enabled: false });
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
 	});
 
 	it("does nothing in passive mode", () => {
 		const { runtime, turn, ctx } = makeHarness({ passive: true });
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
 	});
 
 	it("does nothing with the config flag off (default)", () => {
 		const { runtime, turn, ctx } = makeHarness({ flagOn: false });
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
 	});
 
@@ -173,7 +174,7 @@ describe("registerEvictionFlush", () => {
 		// Explicit chunkTokens so the guard boundary lands inside the test's numbers instead of
 		// being satisfied trivially by the default chunk size (which makes the threshold negative).
 		const { runtime, turn, ctx } = makeHarness({ branch: observedBranch(), compactAtContextTokens: 12_000, chunkTokens: 1_000, liveTokens: 10_000 });
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
 		expect(runtime.pendingEvictions).toHaveLength(0);
 	});
@@ -185,7 +186,7 @@ describe("registerEvictionFlush", () => {
 			chunkTokens: 1_000,
 			liveTokens: 9_999,
 		});
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 		const entries = turn[0](turnEvent(), ctx)?.entries ?? [];
 		expect(entries.map((entry) => (entry as { targetId?: string }).targetId)).toEqual(["u1", "a1", "r1"]);
 	});
@@ -193,7 +194,7 @@ describe("registerEvictionFlush", () => {
 	it("chains context_edit omission drafts after the accumulated boundary entries on turn_end", async () => {
 		const branch = observedBranch();
 		const { runtime, turn, notifications, ctx } = makeHarness({ branch });
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 
 		const foreign: SessionBoundaryDraft = { type: "custom", customType: "other.ext", data: {} };
 		const result = turn[0](turnEvent({ entries: [foreign] }), ctx);
@@ -215,7 +216,7 @@ describe("registerEvictionFlush", () => {
 	it("flushes the same candidates on agent_before_settle (catch-flush for settled runs)", () => {
 		const branch = observedBranch();
 		const { runtime, settle, ctx } = makeHarness({ branch });
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 
 		const result = settle[0](turnEvent(), ctx);
 		const entries = result?.entries ?? [];
@@ -225,7 +226,7 @@ describe("registerEvictionFlush", () => {
 	it("drains the pending candidates on flush so nothing re-fires", () => {
 		const branch = observedBranch();
 		const { runtime, turn, ctx } = makeHarness({ branch });
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 		expect(turn[0](turnEvent(), ctx)).toBeDefined();
 		expect(runtime.pendingEvictions).toHaveLength(0);
 		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
@@ -240,7 +241,7 @@ describe("registerEvictionFlush", () => {
 		// covering chunk — the omitted span would sit in neither representation.
 		const branch = shallowBranch();
 		const { runtime, turn, ctx, notifications } = makeHarness({ branch });
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 
 		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
 		expect(runtime.pendingEvictions).toHaveLength(0); // drained: a tail-window span just rides verbatim
@@ -251,17 +252,39 @@ describe("registerEvictionFlush", () => {
 	it("records what it flushed so /om:status counts only OM-appended omissions", () => {
 		const branch = observedBranch();
 		const { runtime, turn, ctx } = makeHarness({ branch });
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 
 		turn[0](turnEvent(), ctx);
 
 		expect(runtime.evictionRecords.map((record) => record.entryIds)).toEqual([["u1", "a1", "r1"]]);
 	});
 
+	// pi applies a boundary dispatch all-or-nothing: an invalid draft from ANOTHER extension
+	// in the same chain drops OM's drafts too, so the flush must de-credit records whose
+	// omissions never landed (review pass 2: "counting applied entries").
+	it("de-credits records whose omissions pi dropped, before recording the new flush", () => {
+		const branch = observedBranch();
+		branch.push(contextEditEntry("ce-u2", { targetId: "u2", replacement: null })); // landed earlier
+		const { runtime, turn, ctx } = makeHarness({ branch });
+		runtime.evictionRecords.push(
+			{ entryIds: ["u2"], coversUpToId: "r1", tokens: 10 }, // confirmed: omission on branch
+			{ entryIds: ["ghost-1"], coversUpToId: "ghost-1", tokens: 5_000 }, // never landed (failed dispatch)
+		);
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9_000 });
+
+		turn[0](turnEvent(), ctx);
+
+		expect(runtime.evictionRecords.map((record) => record.entryIds)).toEqual([
+			["u2"], // reconciled: still landed
+			["u1", "a1", "r1"], // the new flush's fresh record (confirmed at the next flush/status)
+		]);
+	});
+
 	it("skips spans whose targets became stale since the commit (no Invalid boundary entries fallout)", () => {
 		const { runtime, turn, ctx, notifications } = makeHarness({ branch: observedBranch() });
 		runtime.pendingEvictions.push({
 			entryIds: ["ghost-1", "ghost-2"], // ids not on the active branch (tree stray)
+			coversUpToId: "ghost-2",
 			tokens: 9000,
 		});
 		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
@@ -288,7 +311,7 @@ it("composes with a compaction draft in the same boundary, keeping the chained o
 		// it without disturbing anything.
 		const branch = observedBranch();
 		const { runtime, turn, ctx } = makeHarness({ branch });
-		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 });
 
 		const compactionDraft: SessionBoundaryDraft = {
 			type: "compaction",
@@ -405,7 +428,7 @@ describe("omission drafts, applied the way pi applies them, drop the span from p
 		const sm = SessionManager.inMemory(process.cwd(), undefined, branch as never);
 		expect(sm.buildSessionProjection().messages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult", "user"]);
 
-		for (const draft of spanEvictionDrafts({ entryIds: ["u1", "a1", "r1"], tokens: 9000 })) {
+		for (const draft of spanEvictionDrafts({ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 9000 })) {
 			sm.appendContextEdit(draft.targetId, draft.replacement);
 		}
 

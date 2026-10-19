@@ -166,9 +166,12 @@ metadata-only: no `om.cost` entries, no compaction entry, no LLM involvement any
 - **A span inside the verbatim-tail window is never evicted.** The observation pool reaches the
   model ONLY through the compaction block (OM injects no context of its own); a span whose
   covering chunk will still sit in the kept verbatim tail at the next snap would lose its raw
-  representation without gaining the distilled one — absent from both. The guard measures the
-  span's end depth with the same raw gauge the snap uses (`tailTokens` from the branch tip),
-  so eviction targets exactly the region the next compaction will FOLD.
+  representation without gaining the distilled one — absent from both. The safety guard anchors
+  at the covering chunk's committed boundary (`coversUpToId`) — not the span end, which sits
+  rootward of it in a multi-span slice — and requires the boundary to be an actual snap
+  candidate, measured with the same raw gauge the snap uses (`tailTokens` from the branch tip).
+  The shallow `evictionWindowTokens` guard stays anchored at the span end, because the COST
+  (the one-time suffix re-read) starts at the omission point.
 - Nothing is appended without pre-validation (targets still on the active branch and of an
   editable type), so a stale target can never cause pi to drop other extensions' boundary
   drafts.
@@ -180,8 +183,11 @@ metadata-only: no `om.cost` entries, no compaction entry, no LLM involvement any
   ("evictions: N entries omitted (~X tok projected-context freed)"). The tally counts ONLY
   omissions OM itself appended this process (`Runtime.evictionRecords`): pi's own recovery
   path appends `context_edit` omissions too and they are indistinguishable on the branch, so
-  counting the branch would report evictions OM never performed. The tally resets on resume
-  rather than inventing credit.
+  counting the branch would report evictions OM never performed, and pi applies a boundary
+  dispatch all-or-nothing — a dispatch that failed validation anywhere in the chain drops OM's
+  drafts too. Records are therefore reconciled against the branch at every flush and re-checked
+  by /om:status, so only omissions that actually landed are credited. The tally resets on
+  resume rather than inventing credit.
 
 ## Development
 

@@ -284,19 +284,19 @@ describe("registerStatusCommand", () => {
 		const runtime = new Runtime();
 		runtime.enabled = true;
 		runtime.configLoaded = true;
-		// Two spans OM itself flushed this process: 3 + 2 entries, ~10k + ~1k tokens.
-		runtime.evictionRecords.push(
-			{ entryIds: ["u1", "a1", "r1"], tokens: 10_000 },
-			{ entryIds: ["u2", "r2"], tokens: 1_000 },
-		);
 		registerStatusCommand(pi, runtime);
-		// A branch carrying a context_edit omission OM never appended (pi's recovery path shape:
-		// _omitRecoveryAttempt targets an assistant message) must contribute NOTHING to the tally.
+		// The branch carries TWO confirmed omissions (the record's target ids both landed) plus
+		// one omission in pi's recovery-path shape (_omitRecoveryAttempt targets an assistant
+		// message) whose target is NOT in the record set — it must contribute nothing to the tally.
 		const branch = [
-			rawMessage("u9", "x".repeat(40000)),
+			rawMessage("u1", "x".repeat(40000)), // omitted, ~10k tokens
+			rawMessage("r1", "y".repeat(4000)), // omitted, ~1k tokens
+			contextEditEntry("ce1", { targetId: "u1", replacement: null }),
+			contextEditEntry("ce2", { targetId: "r1", replacement: null }),
 			assistantToolCallMessage("a9"),
 			contextEditEntry("ce-recovery", { targetId: "a9", replacement: null }),
 		];
+		runtime.evictionRecords.push({ entryIds: ["u1", "r1"], coversUpToId: "r1", tokens: 11_000 });
 		const { ctx, notifications } = makeCtx({
 			sessionManager: {
 				getBranch: () => branch,
@@ -307,9 +307,33 @@ describe("registerStatusCommand", () => {
 
 		await commandHandler(commands, "om:status").handler("", ctx as unknown as ExtensionCommandContext);
 
-		const report = notifications[0].message;
-		expect(report).toContain("evictions: 5 entries omitted");
+	const report = notifications[0].message;
+		expect(report).toContain("evictions: 2 entries omitted");
 		expect(report).toContain("~11,000 tok projected-context freed");
+	});
+
+	it("de-credits records from a failed boundary dispatch (pi dropped the drafts wholesale)", async () => {
+		const { pi, commands } = makePi();
+		const runtime = new Runtime();
+		runtime.enabled = true;
+		runtime.configLoaded = true;
+		registerStatusCommand(pi, runtime);
+		// A record exists, but the branch holds NO omission for its target: the dispatch that
+		// carried OM's draft failed validation elsewhere, so pi dropped everything — crediting
+		// it would report an eviction that never landed.
+		const branch = [rawMessage("u1", "x".repeat(40000)), rawMessage("u2", "next turn")];
+		runtime.evictionRecords.push({ entryIds: ["u1"], coversUpToId: "u1", tokens: 10_000 });
+		const { ctx, notifications } = makeCtx({
+			sessionManager: {
+				getBranch: () => branch,
+				getEntries: () => [],
+				getSessionId: () => "sess-1",
+			},
+		});
+
+		await commandHandler(commands, "om:status").handler("", ctx as unknown as ExtensionCommandContext);
+
+		expect(notifications[0].message).toContain("evictions: 0 entries omitted (~0 tok projected-context freed)");
 	});
 
 	it("resets the eviction tally when nothing was recorded (e.g. right after a resume)", async () => {
