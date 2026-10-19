@@ -1,5 +1,6 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
 import { foldLedger, poolTokens, rawTokensSinceObservationCoverage, sumSessionCost, type Entry } from "./ledger/index.js";
+import type { EvictionSpan } from "./ledger/eviction.js";
 import { StatusController } from "./ui/status-controller.js";
 
 /**
@@ -47,6 +48,15 @@ export class Runtime {
 	 * worst case a chunk is re-observed).
 	 */
 	dispatchedCoversUpToId: string | undefined;
+
+	/**
+	 * Mid-cycle eviction candidates (evictObservedEntries), selected from the EXACT committed
+	 * observer slice at commit time and emptied by the next boundary flush. In-process only:
+	 * parallel commits make ledger-watermark coverage inference unsafe, and this knowledge is
+	 * lost on resume — which degrades eviction conservatively to a no-op there (never unsafe:
+	 * un-evicted content rides verbatim until compaction).
+	 */
+	readonly pendingEvictions: EvictionSpan[] = [];
 
 	/** Guards so compaction trigger + hook never re-enter. */
 	compactInFlight = false;

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { foldLedger, poolTokens, rawTokensSinceObservationCoverage, sumSessionCost, type Entry } from "../ledger/index.js";
+import { evictionStats, foldLedger, poolTokens, rawTokensSinceObservationCoverage, sumSessionCost, type Entry } from "../ledger/index.js";
 import { listTopics, readJourney } from "../memory/paths.js";
 import { estimateStringTokens } from "../tokens.js";
 import type { Runtime } from "../runtime.js";
@@ -23,6 +23,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const topicCount = listTopics(runtime.memoryRoot).length;
 			const journey = readJourney(runtime.memoryRoot);
 			const { costUsd, runs } = sumSessionCost(ctx.sessionManager.getEntries() as Entry[]);
+			const evictions = evictionStats(branch);
 
 			const lines = [
 				`om status`,
@@ -30,6 +31,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`  active observations: ${folded.activeObservations.length}`,
 				`  next observer: ${sinceObservation.toLocaleString()} / ${runtime.config.chunkTokens.toLocaleString()} tok`,
 				`  pool: ${pool.toLocaleString()} tok (target ${runtime.config.poolTargetTokens.toLocaleString()}, consolidate at ${runtime.config.consolidateAtPoolTokens.toLocaleString()})`,
+				`  evictions: ${evictions.count.toLocaleString()} entr${evictions.count === 1 ? "y" : "ies"} omitted (~${evictions.tokens.toLocaleString()} tok projected-context freed)`,
 				`  consolidator: ${runtime.consolidatorInFlight ? "running" : "idle"}`,
 				`  last compaction wait: ${runtime.lastCompactionObserverWait ?? "n/a"}`,
 				`  topic files: ${topicCount}`,

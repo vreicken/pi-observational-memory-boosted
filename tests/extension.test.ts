@@ -117,9 +117,10 @@ describe("observationalMemory wiring", () => {
 		expect([...harness.commands.keys()].sort()).toEqual(["om", "om:compact", "om:consolidate", "om:status"]);
 		expect(harness.handlers.get("session_start")).toHaveLength(1);
 		expect(harness.handlers.get("session_shutdown")).toHaveLength(1);
-		// observer trigger + consolidation trigger + compaction trigger all ride turn_end.
-		expect(harness.handlers.get("turn_end")).toHaveLength(3);
+		// observer trigger + consolidation trigger + eviction flush + compaction trigger all ride turn_end.
+		expect(harness.handlers.get("turn_end")).toHaveLength(4);
 		expect(harness.handlers.get("agent_start")).toHaveLength(2);
+		expect(harness.handlers.get("agent_before_settle")).toHaveLength(1);
 		expect(harness.handlers.get("session_before_compact")).toHaveLength(1);
 	});
 

@@ -11,6 +11,8 @@ export type TestEntry = {
 	details?: unknown;
 	firstKeptEntryId?: string;
 	fromId?: string;
+	targetId?: string;
+	replacement?: { content: unknown } | null;
 };
 
 export type TestObservation = {
@@ -178,6 +180,22 @@ export function costEntry(
 		timestamp: DEFAULT_TIMESTAMP,
 		customType: OM_COST,
 		data: { costUsd, role, runId: id },
+		...overrides,
+	};
+}
+
+export function contextEditEntry(
+	id: string,
+	args: { targetId: string; replacement: { content: unknown } | null },
+	overrides: Partial<TestEntry> = {},
+): TestEntry {
+	return {
+		type: "context_edit",
+		id,
+		parentId: null,
+		timestamp: DEFAULT_TIMESTAMP,
+		targetId: args.targetId,
+		replacement: args.replacement,
 		...overrides,
 	};
 }

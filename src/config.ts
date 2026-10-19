@@ -44,6 +44,16 @@ export interface Config {
 	passive: boolean;
 	/** Emit the NDJSON debug log. */
 	debugLog: boolean;
+	/**
+	 * Mid-cycle eviction: omit fully-observed, oversized, shallow turn-spans from future provider
+	 * context via `context_edit` omissions (appended at the next actionable boundary). Off by
+	 * default. Requires om enabled AND not passive AND this flag on.
+	 */
+	evictObservedEntries: boolean;
+	/** Span raw-token total below which eviction is skipped (the one-time cache re-read must pay for itself). */
+	evictionMinTokens: number;
+	/** Shallow-guard: spans whose end is farther than this many raw tokens from the branch tip are skipped. */
+	evictionWindowTokens: number;
 }
 
 export const DEFAULTS: Config = {
@@ -62,6 +72,9 @@ export const DEFAULTS: Config = {
 	},
 	passive: false,
 	debugLog: false,
+	evictObservedEntries: false,
+	evictionMinTokens: 5_000,
+	evictionWindowTokens: 40_000,
 };
 
 const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -106,6 +119,8 @@ function normalizeSettingsConfig(value: Record<string, unknown>, base: Config): 
 		"tailTokens",
 		"journeyTargetTokens",
 		"observerConcurrency",
+		"evictionMinTokens",
+		"evictionWindowTokens",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
@@ -117,6 +132,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>, base: Config): 
 		normalized.resumeAfterMidRunCompaction = value.resumeAfterMidRunCompaction;
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
+	if (typeof value.evictObservedEntries === "boolean") normalized.evictObservedEntries = value.evictObservedEntries;
 	if (isRecord(value.models)) {
 		normalized.models = {
 			observer: normalizeModel(value.models.observer, base.models.observer),

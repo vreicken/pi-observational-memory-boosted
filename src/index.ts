@@ -16,6 +16,7 @@ import { registerStatusCommand } from "./commands/status.js";
 import { registerCompactionHook } from "./hooks/compaction-hook.js";
 import { registerCompactionTrigger } from "./hooks/compaction-trigger.js";
 import { registerConsolidatorTrigger } from "./hooks/consolidator-trigger.js";
+import { registerEvictionFlush } from "./hooks/eviction-flush.js";
 import { registerObserverTrigger } from "./hooks/observer-trigger.js";
 import { OM_ENABLED, type Entry } from "./ledger/index.js";
 import { ensureSessionMemory } from "./memory/session.js";
@@ -87,6 +88,10 @@ export default function observationalMemory(pi: ExtensionAPI): void {
 	// Triggers + hook self-gate on runtime.enabled / passive at their first line.
 	registerObserverTrigger(pi, runtime);
 	registerConsolidatorTrigger(pi, runtime);
+	// Eviction flush registers before the compaction trigger so, when both fire on the same
+	// boundary, eviction drafts chain ahead of the compaction draft (runner hands each handler
+	// the accumulated entries; both survive, order kept).
+	registerEvictionFlush(pi, runtime);
 	registerCompactionTrigger(pi, runtime);
 	registerCompactionHook(pi, runtime);
 

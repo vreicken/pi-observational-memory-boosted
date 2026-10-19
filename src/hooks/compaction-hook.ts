@@ -40,6 +40,14 @@ function firstKeptAfterBoundary(branch: Entry[], boundaryIndex: number): Entry |
  * rendered into the summary and kept verbatim (and nothing is lost). Among boundaries whose
  * next entry is a valid cut point, pick the one whose resulting tail is closest to
  * `tailTokens`. Falls back to pi's proposal when no boundary qualifies (`tail` undefined).
+ *
+ * Mid-cycle-eviction note (evictObservedEntries): on a branch that contains `context_edit`
+ * omissions the snap is unaffected — chunk boundaries are source entries (context_edit entries
+ * are non-source and skip cleanly), and the OM compaction block folds ONLY
+ * `om.observations.recorded`/`dropped` custom entries, so an omitted source can neither
+ * double-represent in the summary nor in `details` (which is a MemoryDetails blob only).
+ * The token tail estimates below may OVER-count evicted (omitted) bytes — the conservative
+ * direction (keeps MORE verbatim), so they are left as-is by design.
  */
 export function snapCutoff(
 	branch: Entry[],
