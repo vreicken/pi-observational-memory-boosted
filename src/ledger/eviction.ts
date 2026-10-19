@@ -25,7 +25,13 @@
 
 import { estimateEntryTokens } from "../tokens.js";
 import type { Entry } from "./types.js";
-import { entryIndexById, findLastCompactionIndex, isSourceEntry, rawTokensAfterIndex } from "./progress.js";
+import {
+	entryIndexById,
+	findLastCompactionIndex,
+	isSourceEntry,
+	isValidCutPoint,
+	rawTokensAfterIndex,
+} from "./progress.js";
 
 /**
  * One evictable turn-span selected at observer-commit time: a contiguous run of source
@@ -34,6 +40,8 @@ import { entryIndexById, findLastCompactionIndex, isSourceEntry, rawTokensAfterI
 export type EvictionSpan = {
 	/** Source-entry ids of the span, in branch order; the first is the span's user message. */
 	entryIds: string[];
+	/** Id of the committed slice's last source entry — the covering chunk's `coversUpToId`. */
+	coversUpToId: string;
 	/** Raw-token estimate of the span at selection time; recomputed from the branch at flush. */
 	tokens: number;
 };
@@ -104,13 +112,16 @@ export function evictableSpansInSlice(
 	const startIndex = indexes.get(sliceEntries[0].id);
 	const endIndex = indexes.get(sliceEntries[sliceEntries.length - 1].id);
 	if (startIndex === undefined || endIndex === undefined || startIndex > endIndex) return [];
+	// Every span this slice produced shares the same covering chunk: its `coversUpToId` is the
+	// watermark the slice ends on — the anchor the flush-time tail guard measures at.
+	const coversUpToId = sliceEntries[sliceEntries.length - 1].id;
 
 	const spans: EvictionSpan[] = [];
 	let open: { ids: string[]; tokens: number } | undefined;
 
 	const close = () => {
 		if (open && open.tokens >= minTokens) {
-			spans.push({ entryIds: open.ids, tokens: open.tokens });
+			spans.push({ entryIds: open.ids, coversUpToId, tokens: open.tokens });
 		}
 		open = undefined;
 	};
@@ -137,7 +148,7 @@ export function evictableSpansInSlice(
 	// user message (or branch summary) follows it on the branch. Otherwise the turn continues
 	// past the watermark and the span straddles it: leave it verbatim.
 	if (open && spanTerminates(branch, endIndex) && open.tokens >= minTokens) {
-		spans.push({ entryIds: open.ids, tokens: open.tokens });
+		spans.push({ entryIds: open.ids, coversUpToId, tokens: open.tokens });
 	}
 
 	return spans;
@@ -146,7 +157,7 @@ export function evictableSpansInSlice(
 export type EvictionFlushInputs = {
 	/** Span raw-token total that must be reached before an omission is worth its read-back. */
 	minTokens: number;
-	/** Depth of the verbatim tail: spans ending CLOSER to the tip than this stay verbatim. */
+	/** Depth of the verbatim tail, measured at the covering chunk's boundary (safety anchor). */
 	tailTokens: number;
 	/** Max raw tokens allowed between the span's end and the branch tip (shallowness guard). */
 	windowTokens: number;
@@ -185,6 +196,22 @@ function spanTerminates(branch: Entry[], lastIndex: number): boolean {
 }
 
 /**
+ * Is the covering chunk's boundary an actual snap candidate — i.e. would `snapCutoff`'s
+ * boundary scan even consider cutting there? It mirrors `firstKeptAfterBoundary` in
+ * compaction-hook.ts (kept in sync with it): a boundary qualifies only when its NEXT source
+ * entry exists and is a valid cut point; otherwise the snap never cuts at that boundary and
+ * the folded region cannot be pinned by it.
+ */
+function coveringBoundaryIsSnapCandidate(branch: Entry[], coversIndex: number): boolean {
+	if (coversIndex + 1 >= branch.length) return false;
+	for (let i = coversIndex + 1; i < branch.length; i++) {
+		if (!isSourceEntry(branch[i])) continue;
+		return isValidCutPoint(branch[i]);
+	}
+	return false;
+}
+
+/**
  * Re-evaluate committed (in-process) eviction candidates against the LIVE branch and keep only
  * those that are currently safe and worthwhile. Load-bearing order of rejections — all of
  * them are conservative (an eviction that is dropped merely rides verbatim until compaction):
@@ -197,14 +224,25 @@ function spanTerminates(branch: Entry[], lastIndex: number): boolean {
  *  4. no member already carries a context_edit on this branch (no duplicate omissions);
  *  5. span still starts at a user message and still terminates here after the re-walk;
  *  6. span raw-token total still ≥ minTokens (recomputed from the branch);
- *  7. span end OUTSIDE the verbatim-tail window: depth from the tip ≥ tailTokens. The depth
- *     must be measured with the SAME raw gauge the compaction snap uses: the span must sit in
- *     the region the next compaction will FOLD, because the observation pool reaches the model
- *     only through the compaction block — an evicted span kept verbatim at the next snap is in
- *     NEITHER representation (the double-absence defect QA proved on run 38ca2b3b);
- *  8. span end within windowTokens of the branch tip (the shallow guard that bounds the
- *     one-time full-price cache-suffix re-read — see README);
- *  9. span does not sit before the compaction cutoff / under the last compaction's summarized
+ *  7. span end OUTSIDE the verbatim-tail window, measured at the COVERING CHUNK's committed
+ *     boundary (`coversUpToId`) — not at the span end. The fold includes an
+ *     `om.observations.recorded` chunk only when its coverage index sits rootward of the snap's
+ *     kept start, and for a multi-span slice the span end lies rootward of `coversUpToId`: a
+ *     span-end measurement can pass the guard while the chunk boundary itself sits inside the
+ *     tail window, so the snap lands rootward of the covering chunk and its observation is
+ *     excluded from the fold while the span is no longer verbatim either (QA/review pass 2).
+ *     The guard uses the SAME raw gauge the snap uses, which makes this provable: snap
+ *     candidates deeper than the covering boundary have measured tails ≥ its own, hence a
+ *     delta no smaller; candidates tipward of it fold MORE, never less. The observation pool
+ *     reaches the model only through the compaction block — an evicted span kept verbatim at
+ *     the next snap would sit in NEITHER representation.
+ *  8. the covering boundary must also be an ACTUAL snap candidate — the snap skips a chunk
+ *     boundary whose next source entry is not a valid cut point and never cuts there, so a
+ *     span whose covering chunk cannot be snapped is skipped;
+ *  9. span end within windowTokens of the branch tip (the shallowness guard that bounds the
+ *     one-time full-price cache-suffix re-read — see README). The COST anchor stays at the
+ *     span end: the cost is the suffix behind the omission point, which is where the span ends.
+ * 10. span does not sit before the compaction cutoff / under the last compaction's summarized
  *     region (spanTerminates + the kept-tail check below).
  *
  * `span.tokens` on the returned spans is the branch-accurate recompute.
@@ -245,6 +283,14 @@ export function filterEvictableSpans(
 		if (!isUserMessage(branch[memberIndexes[0]])) continue;
 		if (!spanTerminates(branch, lastIndex)) continue;
 
+		// Safety guard (steps 7–8): the tail depth anchors at the covering chunk's committed
+		// boundary, and that boundary must be a snap candidate — only then is the fold of its
+		// observation guaranteed by the snap's selection rule.
+		const coversIndex = indexes.get(span.coversUpToId);
+		if (coversIndex === undefined) continue;
+		if (!coveringBoundaryIsSnapCandidate(branch, coversIndex)) continue;
+		if (rawTokensAfterIndex(branch, coversIndex) < inputs.tailTokens) continue;
+
 		// Under the last compaction's cutoff everything was already folded into the summary:
 		// omitting those entries is redundant metadata. Keep the span only when all its members
 		// sit in the compaction's kept verbatim tail (or no compaction exists past it).
@@ -258,11 +304,10 @@ export function filterEvictableSpans(
 		let tokens = 0;
 		for (const index of memberIndexes) tokens += estimateEntryTokens(branch[index]);
 		if (tokens < inputs.minTokens) continue;
-		const depthFromTip = rawTokensAfterIndex(branch, lastIndex);
-		if (depthFromTip < inputs.tailTokens) continue;
-		if (depthFromTip > inputs.windowTokens) continue;
+		// Cost guard only (step 9) — the re-read suffix starts at the omission point, the span end.
+		if (rawTokensAfterIndex(branch, lastIndex) > inputs.windowTokens) continue;
 
-		kept.push({ entryIds: [...span.entryIds], tokens });
+		kept.push({ entryIds: [...span.entryIds], coversUpToId: span.coversUpToId, tokens });
 	}
 
 	return kept;
@@ -297,4 +342,31 @@ export function evictionRecordStats(records: readonly EvictionSpan[]): { count: 
 		tokens += record.tokens;
 	}
 	return { count, tokens };
+}
+
+/**
+ * Ids that currently carry a `context_edit` OMISSION on the branch. OM's drafts and pi's own
+ * recovery omissions both land here — it cannot distinguish authorship, so it is only ever
+ * used to CONFIRM records (whose target ids OM chose), never to count credit from scratch.
+ */
+export function omissionTargetIds(branch: Entry[]): Set<string> {
+	const ids = new Set<string>();
+	for (const entry of branch) {
+		if (!isContextEditEntry(entry) || entry.replacement !== null) continue;
+		ids.add(entry.targetId);
+	}
+	return ids;
+}
+
+/**
+ * Keep only records whose omissions ACTUALLY landed: pi applies a boundary dispatch
+ * all-or-nothing, so when another extension's invalid draft fails somewhere in the chain, ALL
+ * drafts — OM's included — are dropped and raw entry-based tally must not count them. A
+ * record whose omission vanished under /tree (navigated to a pre-edit point) also drops out;
+ * re-omitting it would re-record it at a later flush. Under-credit is the safe direction;
+ * over-crediting omissions that never landed is what the review pass 2 flagged, and counting
+ * applied entries is what removes it.
+ */
+export function confirmedEvictionSpans(records: readonly EvictionSpan[], omissionTargets: ReadonlySet<string>): EvictionSpan[] {
+	return records.filter((record) => record.entryIds.length > 0 && record.entryIds.every((id) => omissionTargets.has(id)));
 }

@@ -24,7 +24,7 @@ import type {
 	TurnEndEvent,
 	TurnEndEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { filterEvictableSpans, rawTokensSinceLastCompaction, spanEvictionDrafts, type EvictionSpan, type Entry } from "../ledger/index.js";
+import { confirmedEvictionSpans, filterEvictableSpans, omissionTargetIds, rawTokensSinceLastCompaction, spanEvictionDrafts, type EvictionSpan, type Entry } from "../ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
 type FlushContext = ExtensionContext & {
@@ -46,6 +46,13 @@ export function evaluateEvictionFlush(
 	runtime.ensureConfig((ctx as { cwd?: string }).cwd ?? "");
 	const branch = ctx.sessionManager.getBranch() as Entry[];
 	const contextTokens = ctx.getContextUsage?.()?.tokens ?? rawTokensSinceLastCompaction(branch);
+
+	// Reconcile the tally FIRST, against the live branch: pi applies a boundary dispatch
+	// all-or-nothing, so records from a dispatch that failed validation anywhere in the chain
+	// never landed and must not be credited (nor must records whose omissions vanished
+	// under /tree). Then new spans are appended below as fresh records.
+	const confirmed = confirmedEvictionSpans(runtime.evictionRecords, omissionTargetIds(branch));
+	runtime.evictionRecords.splice(0, runtime.evictionRecords.length, ...confirmed);
 
 	// Candidates belong to flush #1 (their commit): drained wherever they are evaluated, so
 	// nothing accumulates when a guard rejects them. A rejected span simply stays verbatim

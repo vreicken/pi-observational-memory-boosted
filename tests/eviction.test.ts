@@ -30,9 +30,10 @@ const GIANT = "x".repeat(40_000); // ~10k tokens at ~4 chars/token
 const small = "small";
 const SMALL_TOKENS = estimateEntryTokens(rawMessage("t", small));
 
-function span(entryIds: string[], branch: TestEntry[]): EvictionSpan {
+function span(entryIds: string[], branch: TestEntry[], coversUpToId = entryIds[entryIds.length - 1]): EvictionSpan {
 	return {
 		entryIds,
+		coversUpToId,
 		tokens: entryIds.reduce(
 			(total, id) => total + estimateEntryTokens(branch.find((entry) => entry.id === id) ?? rawMessage(id, "")),
 			0,
@@ -99,7 +100,7 @@ describe("evictableSpansInSlice", () => {
 			rawMessage("u2", small),
 		];
 		const spans = evictableSpansInSlice(branch, branch.slice(0, 3), estimateEntryTokens(rawMessage("t", GIANT)) - 1);
-		expect(spans).toEqual([{ entryIds: ["u1", "a1", "r1"], tokens: spans[0]?.tokens }]);
+		expect(spans).toEqual([{ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: spans[0]?.tokens }]);
 	});
 
 	it("discards a slice that never terminated — nothing follows the covered range at all", () => {
@@ -159,7 +160,9 @@ describe("evictableSpansInSlice", () => {
 		// minTokens just above the u2 span's size so only the GIANT u1 span survives.
 		const spans = evictableSpansInSlice(slice, slice, SMALL_TOKENS + 1);
 
-		expect(spans).toEqual([{ entryIds: ["u1"], tokens: estimateEntryTokens(rawMessage("t", GIANT)) }]);
+		expect(spans).toEqual([
+			{ entryIds: ["u1"], coversUpToId: "u3", tokens: estimateEntryTokens(rawMessage("t", GIANT)) },
+		]);
 	});
 });
 
@@ -319,14 +322,14 @@ describe("filterEvictableSpans", () => {
 		expect(kept[0].entryIds).toEqual(["u1", "a1", "r1"]);
 	});
 
-	// Characterization of the QA finding on this run: the depth guard measures the span's END,
-	// but the safety property depends on the COVERING CHUNK's boundary. When a committed slice
-	// holds more than one turn-span, the earlier span's end is rootward of `coversUpToId`, so its
-	// depth can satisfy the tail guard while the chunk boundary itself sits inside the tail window
-	// — the snap then lands rootward of the covering chunk, excluding its observation from the
-	// fold while the omitted span is no longer verbatim either. Pinned so the fix has a target:
-	// the guard must measure at the covering chunk, not at the span end.
-	it("depth guard measures the span end, not the covering chunk boundary (multi-span slice)", () => {
+	// The repaired guard measures at the COVERING CHUNK's committed boundary (AC-2, review
+	// pass 2). For a multi-span slice the span end lies rootward of `coversUpToId`: the earlier
+	// span's end can satisfy a span-end guard while the chunk boundary itself sits inside the
+	// tail window — the snap then lands rootward of the covering chunk, excluding its
+	// observation from the fold while the omitted span is no longer verbatim either. This test
+	// WAS pinned as a characterization of the defect (asserted keep + neither-representation);
+	// with the anchor at `coversUpToId` it must assert rejection instead.
+	it("rejects a multi-span-slice span whose covering chunk boundary sits inside the tail window", () => {
 		const branch: TestEntry[] = [
 			rawMessage("u1", "prompt one"),
 			toolResultMessage("r1", "x".repeat(40_000)), // chunk A boundary (omA covers r1)
@@ -339,22 +342,68 @@ describe("filterEvictableSpans", () => {
 			rawMessage("u4", "prompt four"),
 		];
 
-		const kept = filterEvictableSpans(branch, [span(["u2", "r2"], branch)], {
+		// The span [u2, r2] belongs to chunk B, whose boundary (r3) sits ~6 tokens from the tip —
+		// inside the 20k tail window. A span-end depth (~20k, passing) is exactly the shape that
+		// that used to evade a span-end guard; the covering-boundary anchor must reject it.
+		const kept = filterEvictableSpans(branch, [span(["u2", "r2"], branch, "r3")], {
 			...BASE_INPUTS,
 			tailTokens: 20_000,
 			windowTokens: 40_000,
 			minTokens: 5_000,
 		});
-		expect(kept).toHaveLength(1);
+		expect(kept).toEqual([]);
 
-		// The snap prefers chunk A's boundary (measured tail ~30k, delta ~10k) over chunk B's
-		// (tail ~6 tokens, delta ~20k), so the cutoff lands BEFORE the chunk that observed the
-		// evicted span: its observation is excluded from the fold while the span is omitted from
-		// the tail — neither representation.
+		// Prove the mechanism: WITHOUT the guard the snap would have cut at u2 (chunk A's
+		// boundary beats chunk B's) and excluded chunk B's observation from the fold.
 		const snap = snapCutoff(branch, "u4", 20_000);
 		expect(snap.firstKeptId).toBe("u2");
 		const projection = buildCompactionProjection(branch, snap.firstKeptId);
 		expect(projection.observations.map((o) => o.content)).toEqual(["Observation 2026-05-02T10:00:01"]);
+	});
+
+	it("keeps a multi-span-slice span whose covering chunk boundary IS outside the tail window", () => {
+		// Same shape as the rejected case above, but chunk B's boundary (r3) now sits ~21k tokens
+		// deep (past the 20k tail window): the covering-boundary anchor passes and the span stays
+		// evictable — the anchor measures where the fold actually happens, not the span end.
+		const branch: TestEntry[] = [
+			rawMessage("u1", "prompt one"),
+			toolResultMessage("r1", GIANT),
+			observationsRecordedEntry("omA", { observations: [observation("2026-05-02T10:00:01")], coversUpToId: "r1" }),
+			rawMessage("u2", "prompt two"),
+			toolResultMessage("r2", GIANT), // the evicted span ends here (depth ~21,010)
+			rawMessage("u3", "prompt three"),
+			toolResultMessage("r3", small), // chunk B boundary (omB covers r3), ~21k tokens deep
+			observationsRecordedEntry("omB", { observations: [observation("2026-05-02T10:05:00")], coversUpToId: "r3" }),
+			rawMessage("u4", "prompt four"),
+			toolResultMessage("r4", "z".repeat(84_000)), // ~21k of tail filler behind the boundary
+			rawMessage("u5", "prompt five"),
+		];
+		const kept = filterEvictableSpans(branch, [span(["u2", "r2"], branch, "r3")], {
+			...BASE_INPUTS,
+			tailTokens: 20_000,
+			windowTokens: 40_000,
+			minTokens: 1000,
+		});
+		expect(kept).toHaveLength(1);
+		expect(kept[0].coversUpToId).toBe("r3");
+	});
+
+	it("rejects a span whose covering chunk boundary is not a snap candidate", () => {
+		// The chunk ends ON the assistant tool call and its result is the NEXT source entry: the
+		// snap never cuts at that boundary (firstKeptAfterBoundary requires a valid cut point),
+		// so the fold of its covering chunk cannot be pinned — reject even with the tail depth
+		// completely open (tailTokens 0).
+		const branch: TestEntry[] = [
+			rawMessage("u1", GIANT),
+			assistantToolCallMessage("aX", { toolName: "bash" }), // chunk boundary (omA covers aX)
+			toolResultMessage("rX", GIANT), // NOT a valid cut point → boundary skipped by the snap
+			rawMessage("u2", small),
+		];
+		const kept = filterEvictableSpans(branch, [span(["u1", "aX"], branch, "aX")], {
+			...BASE_INPUTS,
+			tailTokens: 0,
+		});
+		expect(kept).toEqual([]);
 	});
 
 	it(": nothing evicts when the band is empty (tail window deeper than the shallow window)", () => {
@@ -370,7 +419,7 @@ describe("filterEvictableSpans", () => {
 
 describe("spanEvictionDrafts", () => {
 	it("maps a span to one context_edit draft per member, omitting (replacement null)", () => {
-		expect(spanEvictionDrafts({ entryIds: ["u1", "r1"], tokens: 5 })).toEqual([
+		expect(spanEvictionDrafts({ entryIds: ["u1", "r1"], coversUpToId: "r1", tokens: 5 })).toEqual([
 			{ type: "context_edit", targetId: "u1", replacement: null },
 			{ type: "context_edit", targetId: "r1", replacement: null },
 		]);
@@ -380,8 +429,8 @@ describe("spanEvictionDrafts", () => {
 describe("evictionRecordStats", () => {
 	it("sums only recorded (OM-appended) omissions; pi's own recovery omissions never appear here", () => {
 		const stats = evictionRecordStats([
-			{ entryIds: ["u1", "a1", "r1"], tokens: 10_000 },
-			{ entryIds: ["u2"], tokens: 10 },
+			{ entryIds: ["u1", "a1", "r1"], coversUpToId: "r1", tokens: 10_000 },
+			{ entryIds: ["u2"], coversUpToId: "u2", tokens: 10 },
 		]);
 		expect(stats).toEqual({ count: 4, tokens: 10_010 });
 	});
