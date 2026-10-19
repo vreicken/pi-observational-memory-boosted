@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildCompactionProjection, isSourceEntry, renderSummary } from "../src/ledger/index.js";
-import { canSkipObserverWait, snapCutoff, snapFirstKeptEntryId } from "../src/hooks/compaction-hook.js";
+import { boundaryTailProposal, canSkipObserverWait, snapCutoff, snapFirstKeptEntryId } from "../src/hooks/compaction-hook.js";
 import {
 	contextEditEntry,
 	observation,
@@ -50,6 +50,35 @@ describe("snapFirstKeptEntryId", () => {
 	it("falls back to pi's proposed firstKeptEntryId when no boundary qualifies", () => {
 		const branch = [rawMessage("raw-1", body), rawMessage("raw-2", body)];
 		expect(snapFirstKeptEntryId(branch, "raw-2", 5)).toBe("raw-2");
+	});
+
+	// The "no boundary qualifies" fallback above has no boundaries at all, so the path where a
+	// boundary EXISTS but nothing source follows it is untested. A recorded entry is non-source,
+	// so a chunk boundary that is the last source entry on the branch qualifies as a boundary yet
+	// yields no kept start — the snap must fall back to pi's proposal.
+	it("falls back to pi's proposal when a boundary exists but no source entry follows it", () => {
+		const branch = [
+			rawMessage("raw-1", body),
+			rawMessage("raw-2", body),
+			observationsRecordedEntry("om-1", { observations: [observation("2026-05-02T10:00:01")], coversUpToId: "raw-2" }),
+		];
+		const snap = snapCutoff(branch, "raw-2", 25);
+		expect(snap.firstKeptId).toBe("raw-2");
+		expect(snap.tail).toBeUndefined();
+	});
+
+	it("keeps the first valid cut point after the entry where the accumulated tail first fits tailTokens", () => {
+		const branch = [
+			rawMessage("raw-1", body), // tail behind it: 10 + 10 = 20 > 5 -> cut at the next valid cut point
+			toolResultMessage("raw-2", body), // a tool result is never a valid cut point
+			rawMessage("raw-3", body),
+		];
+		expect(boundaryTailProposal(branch, 5)).toBe("raw-3");
+	});
+
+	it("keeps the last source entry when nothing on the branch exceeds the tail target", () => {
+		const branch = [rawMessage("raw-1", body), rawMessage("raw-2", body)];
+		expect(boundaryTailProposal(branch, 100)).toBe("raw-2");
 	});
 
 	it("is unaffected by a context_edit omission on the branch (non-source, skips cleanly)", () => {
