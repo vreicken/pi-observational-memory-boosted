@@ -8,6 +8,7 @@ import type {
 	TurnEndEvent,
 	TurnEndEventResult,
 } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 // The observer commit path spawns subprocesses; the wiring under test here is only that a
 // COMMIT (>=1 observation) enqueues eviction candidates from the exact slice. Swap the spawn
@@ -28,6 +29,7 @@ import { spawnWorker } from "../src/spawn/launch.js";
 import { readObserverResult, readWorkerCost } from "../src/spawn/runs.js";
 import { evaluateObserverTriggers } from "../src/hooks/observer-trigger.js";
 import { registerEvictionFlush } from "../src/hooks/eviction-flush.js";
+import { spanEvictionDrafts } from "../src/ledger/eviction.js";
 import { Runtime } from "../src/runtime.js";
 import {
 	assistantToolCallMessage,
@@ -88,6 +90,7 @@ describe("registerEvictionFlush", () => {
 		branch?: TestEntry[];
 		liveTokens?: number | null | undefined;
 		compactAtContextTokens?: number;
+		chunkTokens?: number;
 	}): { runtime: Runtime; turn: BoundaryHandler[]; settle: BoundaryHandler[]; notifications: Notification[]; ctx: CtxStub } {
 		const runtime = new Runtime();
 		runtime.enabled = opts.enabled ?? true;
@@ -95,6 +98,7 @@ describe("registerEvictionFlush", () => {
 		runtime.config.passive = opts.passive ?? false;
 		runtime.config.evictObservedEntries = opts.flagOn ?? true;
 		if (opts.compactAtContextTokens !== undefined) runtime.config.compactAtContextTokens = opts.compactAtContextTokens;
+		if (opts.chunkTokens !== undefined) runtime.config.chunkTokens = opts.chunkTokens;
 		createdTempRoots.push(mkdtempSync(join(tmpdir(), "om-eviction-")));
 		runtime.memoryRoot = join(createdTempRoots.at(-1)!, ".memory", "sess-1");
 
@@ -145,10 +149,24 @@ describe("registerEvictionFlush", () => {
 	});
 
 	it("returns no drafts while projected context is inside the compaction-imminence window", () => {
-		const { runtime, turn, ctx } = makeHarness({ branch: observedBranch(), compactAtContextTokens: 12_000 });
+		// Explicit chunkTokens so the guard boundary lands inside the test's numbers instead of
+		// being satisfied trivially by the default chunk size (which makes the threshold negative).
+		const { runtime, turn, ctx } = makeHarness({ branch: observedBranch(), compactAtContextTokens: 12_000, chunkTokens: 1_000, liveTokens: 10_000 });
 		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
 		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
 		expect(runtime.pendingEvictions).toHaveLength(0);
+	});
+
+	it("still flushes just outside the imminence window (the guard is a boundary, not a blanket veto)", () => {
+		const { runtime, turn, ctx } = makeHarness({
+			branch: observedBranch(),
+			compactAtContextTokens: 12_000,
+			chunkTokens: 1_000,
+			liveTokens: 9_999,
+		});
+		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
+		const entries = turn[0](turnEvent(), ctx)?.entries ?? [];
+		expect(entries.map((entry) => (entry as { targetId?: string }).targetId)).toEqual(["u1", "a1", "r1"]);
 	});
 
 	it("chains context_edit omission drafts after the accumulated boundary entries on turn_end", async () => {
@@ -322,5 +340,33 @@ describe("observer commit selects eviction candidates from the exact committed s
 		// The observation still commits; only eviction selection is skipped.
 		expect(appended).toHaveLength(1);
 		expect(runtime.pendingEvictions).toHaveLength(0);
+	});
+});
+
+describe("omission drafts, applied the way pi applies them, drop the span from projected context", () => {
+	it("omits the evicted span from the model's context while the raw log stays intact", () => {
+		const branch = [
+			rawMessage("u1", "prompt one"),
+			assistantToolCallMessage("a1", { toolName: "bash" }, { parentId: "u1" }),
+			toolResultMessage("r1", GIANT, { parentId: "a1" }),
+			rawMessage("u2", "next turn", { parentId: "r1" }),
+		];
+		const sm = SessionManager.inMemory(process.cwd(), undefined, branch as never);
+		expect(sm.buildSessionProjection().messages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult", "user"]);
+
+		for (const draft of spanEvictionDrafts({ entryIds: ["u1", "a1", "r1"], tokens: 9000 })) {
+			sm.appendContextEdit(draft.targetId, draft.replacement);
+		}
+
+		// The evicted span is gone from what the model sees; the un-evicted turn is not.
+		expect(sm.buildSessionProjection().messages.map((m) => m.role)).toEqual(["user"]);
+		// Immutability: every evicted source entry is still on the branch.
+		expect(sm.getBranch().filter((entry) => (entry as { type: string }).type === "message").map((entry) => (entry as { id: string }).id)).toEqual([
+			"u1",
+			"a1",
+			"r1",
+			"u2",
+		]);
+		expect(sm.getBranch().filter((entry) => (entry as { type: string }).type === "context_edit")).toHaveLength(3);
 	});
 });
