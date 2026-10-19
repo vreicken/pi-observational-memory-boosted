@@ -41,6 +41,7 @@ import {
 } from "./fixtures/session.js";
 
 const GIANT = "x".repeat(40_000); // ~10k tokens — above evictionMinTokens (5000)
+const TAIL = "z".repeat(80_000); // ~20k tokens — puts the span outside the shipped 20k tail window
 
 type Notification = { message: string; level?: "info" | "warning" | "error" };
 type CtxStub = {
@@ -55,7 +56,23 @@ type BoundaryHandler = (
 	ctx: CtxStub,
 ) => TurnEndEventResult | void;
 
+// The span [u1, a1, r1] must sit OUTSIDE the verbatim-tail window to be evictable, so the
+// branch carries a ~20k-token tail behind it: depth from the tip at r1 is ~20010, inside the
+// eligible band [tailTokens, evictionWindowTokens]. The firing tests therefore run under the
+// shipped default tail window, not under a disabled guard.
 function observedBranch(): TestEntry[] {
+	return [
+		rawMessage("u1", "find the biggest file"),
+		assistantToolCallMessage("a1", { toolName: "bash" }),
+		toolResultMessage("r1", GIANT),
+		rawMessage("u2", "next turn"),
+		toolResultMessage("tail", TAIL),
+	];
+}
+
+// The same turn with nothing behind it: the span ends ~10 tokens from the tip, i.e. inside the
+// verbatim-tail window, where eviction would leave it in neither representation.
+function shallowBranch(): TestEntry[] {
 	return [
 		rawMessage("u1", "find the biggest file"),
 		assistantToolCallMessage("a1", { toolName: "bash" }),
@@ -100,9 +117,9 @@ describe("registerEvictionFlush", () => {
 		runtime.config.evictObservedEntries = opts.flagOn ?? true;
 		if (opts.compactAtContextTokens !== undefined) runtime.config.compactAtContextTokens = opts.compactAtContextTokens;
 		if (opts.chunkTokens !== undefined) runtime.config.chunkTokens = opts.chunkTokens;
-		// Default 0 so the firing tests stay focused on their own guard; the verbatim-tail guard
-		// gets its own tests.
-		runtime.config.tailTokens = opts.tailTokens ?? 0;
+		// Shipped default, so the firing tests prove a span can satisfy BOTH depth guards at
+		// once; the tail-window rejection test uses a branch whose span ends inside the window.
+		runtime.config.tailTokens = opts.tailTokens ?? 20_000;
 		createdTempRoots.push(mkdtempSync(join(tmpdir(), "om-eviction-")));
 		runtime.memoryRoot = join(createdTempRoots.at(-1)!, ".memory", "sess-1");
 
@@ -221,8 +238,8 @@ describe("registerEvictionFlush", () => {
 		// Shipped-default tail window (tailTokens 20 000): the span [u1, a1, r1] ends ~10 tokens
 		// from the tip, so the next snap would keep the range verbatim instead of folding its
 		// covering chunk — the omitted span would sit in neither representation.
-		const branch = observedBranch();
-		const { runtime, turn, ctx, notifications } = makeHarness({ branch, tailTokens: 20_000 });
+		const branch = shallowBranch();
+		const { runtime, turn, ctx, notifications } = makeHarness({ branch });
 		runtime.pendingEvictions.push({ entryIds: ["u1", "a1", "r1"], tokens: 9000 });
 
 		expect(turn[0](turnEvent(), ctx)).toBeUndefined();
@@ -300,7 +317,10 @@ describe("observer commit selects eviction candidates from the exact committed s
 		runtime.configLoaded = true;
 		runtime.config.passive = false;
 		runtime.config.evictObservedEntries = opts.flagOn ?? true;
-		runtime.config.chunkTokens = 10_000;
+		// Must exceed the branch's span tokens so exactly ONE observer dispatches: the tail
+		// filler that puts the span outside the verbatim-tail window is itself larger than the
+		// default chunk budget, and a 10k chunk clock would fire a second observer for it.
+		runtime.config.chunkTokens = 15_000;
 
 		const branch = observedBranch();
 		const appended: Array<{ customType: string; data: unknown }> = [];
