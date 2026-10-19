@@ -10,6 +10,8 @@ import {
 	type EvictionFlushInputs,
 	type EvictionSpan,
 } from "../src/ledger/eviction.js";
+import { buildCompactionProjection } from "../src/ledger/projection.js";
+import { snapCutoff } from "../src/hooks/compaction-hook.js";
 import { estimateEntryTokens } from "../src/tokens.js";
 import type { Entry } from "../src/ledger/index.js";
 import {
@@ -17,6 +19,8 @@ import {
 	branchSummary,
 	compactionEntry,
 	contextEditEntry,
+	observation,
+	observationsRecordedEntry,
 	rawMessage,
 	toolResultMessage,
 	type TestEntry,
@@ -313,6 +317,44 @@ describe("filterEvictableSpans", () => {
 		);
 		expect(kept).toHaveLength(1);
 		expect(kept[0].entryIds).toEqual(["u1", "a1", "r1"]);
+	});
+
+	// Characterization of the QA finding on this run: the depth guard measures the span's END,
+	// but the safety property depends on the COVERING CHUNK's boundary. When a committed slice
+	// holds more than one turn-span, the earlier span's end is rootward of `coversUpToId`, so its
+	// depth can satisfy the tail guard while the chunk boundary itself sits inside the tail window
+	// — the snap then lands rootward of the covering chunk, excluding its observation from the
+	// fold while the omitted span is no longer verbatim either. Pinned so the fix has a target:
+	// the guard must measure at the covering chunk, not at the span end.
+	it("depth guard measures the span end, not the covering chunk boundary (multi-span slice)", () => {
+		const branch: TestEntry[] = [
+			rawMessage("u1", "prompt one"),
+			toolResultMessage("r1", "x".repeat(40_000)), // chunk A boundary (omA covers r1)
+			observationsRecordedEntry("omA", { observations: [observation("2026-05-02T10:00:01")], coversUpToId: "r1" }),
+			rawMessage("u2", "prompt two"),
+			toolResultMessage("r2", "y".repeat(40_000)), // evicted span ends here: depth ~20k, in band
+			rawMessage("u3", "prompt three"),
+			toolResultMessage("r3", "z".repeat(80_000)), // chunk B boundary (omB covers r3)
+			observationsRecordedEntry("omB", { observations: [observation("2026-05-02T10:05:00")], coversUpToId: "r3" }),
+			rawMessage("u4", "prompt four"),
+		];
+
+		const kept = filterEvictableSpans(branch, [span(["u2", "r2"], branch)], {
+			...BASE_INPUTS,
+			tailTokens: 20_000,
+			windowTokens: 40_000,
+			minTokens: 5_000,
+		});
+		expect(kept).toHaveLength(1);
+
+		// The snap prefers chunk A's boundary (measured tail ~30k, delta ~10k) over chunk B's
+		// (tail ~6 tokens, delta ~20k), so the cutoff lands BEFORE the chunk that observed the
+		// evicted span: its observation is excluded from the fold while the span is omitted from
+		// the tail — neither representation.
+		const snap = snapCutoff(branch, "u4", 20_000);
+		expect(snap.firstKeptId).toBe("u2");
+		const projection = buildCompactionProjection(branch, snap.firstKeptId);
+		expect(projection.observations.map((o) => o.content)).toEqual(["Observation 2026-05-02T10:00:01"]);
 	});
 
 	it(": nothing evicts when the band is empty (tail window deeper than the shallow window)", () => {
