@@ -126,6 +126,24 @@ describe("evictableSpansInSlice", () => {
 		expect(spans).toEqual([]);
 	});
 
+	it("never groups entries belonging to a slice that has not committed (out-of-order parallel commits)", () => {
+		// Chunk A [s1, s2] is still in flight (or failed); chunk B [s3, s4] committed. The branch
+		// holds both, so a watermark-only predicate would declare s1..s4 covered. Only the exact
+		// committed slice may produce spans.
+		const branch = [
+			rawMessage("s1", "turn one"),
+			toolResultMessage("s2", GIANT),
+			rawMessage("s3", "turn two"),
+			toolResultMessage("s4", GIANT),
+			rawMessage("s5", small),
+		];
+		const committedSlice = branch.slice(2, 4); // chunk B only
+		const spans = evictableSpansInSlice(branch, committedSlice, estimateEntryTokens(rawMessage("t", GIANT)) - 1);
+
+		expect(spans).toHaveLength(1);
+		expect(spans[0].entryIds).toEqual(["s3", "s4"]);
+	});
+
 	it("terminates a span at a branch summary without including it", () => {
 		const slice: TestEntry[] = [
 			rawMessage("u1", GIANT),
