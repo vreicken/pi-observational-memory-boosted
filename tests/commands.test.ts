@@ -307,7 +307,7 @@ describe("registerStatusCommand", () => {
 
 		await commandHandler(commands, "om:status").handler("", ctx as unknown as ExtensionCommandContext);
 
-	const report = notifications[0].message;
+		const report = notifications[0].message;
 		expect(report).toContain("evictions: 2 entries omitted");
 		expect(report).toContain("~11,000 tok projected-context freed");
 	});
