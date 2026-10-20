@@ -15,10 +15,17 @@ type UIStub = {
 	setWidget: (key: string, content: string[] | undefined) => void;
 	theme: { fg: (_color: string, text: string) => string };
 };
+/**
+ * pi's `ExtensionMode` (dist/core/extensions/types.d.ts) — not re-exported from the package root,
+ * so the union is declared here. `mode` itself is required on a real `ExtensionContext`; the stub
+ * keeps it optional so a case can model an absent field, but every host-shaped case uses a real
+ * mode string.
+ */
+type HostMode = "tui" | "rpc" | "json" | "print";
 type CtxStub = {
 	hasUI: boolean;
 	cwd: string;
-	mode?: string;
+	mode?: HostMode;
 	ui: UIStub;
 	sessionManager: {
 		getBranch: () => unknown[];
@@ -52,7 +59,7 @@ function handlerFor(harness: Harness, event: string): EventHandler {
 	return list[0];
 }
 
-function makeHarness(cwd: string, opts: { hasUI?: boolean; mode?: string; branch?: TestEntry[] } = {}): Harness {
+function makeHarness(cwd: string, opts: { hasUI?: boolean; mode?: HostMode; branch?: TestEntry[] } = {}): Harness {
 	const handlers = new Map<string, EventHandler[]>();
 	const commands = new Map<string, CommandOpts>();
 	const appended: Array<{ customType: string; data: unknown }> = [];
@@ -155,6 +162,35 @@ describe("observationalMemory wiring", () => {
 		// detach() clears footer + widget.
 		expect(harness.statusText).toContain(undefined);
 		expect(harness.widgets).toContain(undefined);
+	});
+
+	// The guard is `mode === "tui"`, NOT `hasUI`: pi reports hasUI true in rpc mode too, and rpc's
+	// setStatus/setWidget emit real extension_ui_request frames, so an hasUI-swap would ship the
+	// footer/widget to a headless RPC host. Each real non-tui mode is pinned here so that swap
+	// (the originally proposed fix) fails loudly instead of silently widening the footprint.
+	it.each<HostMode>(["rpc", "json", "print"])("does not touch the UI in %s mode even with hasUI true", async (mode) => {
+		const harness = makeHarness(cwd, { branch: [gateEntry("g1", true)], mode, hasUI: true });
+		await invokeEvent(harness, "session_start");
+
+		expect(harness.statusText).toHaveLength(0);
+		expect(harness.widgets).toHaveLength(0);
+	});
+
+	it("does not attach in tui mode when the host reports no dialog-capable UI", async () => {
+		const harness = makeHarness(cwd, { branch: [gateEntry("g1", true)], mode: "tui", hasUI: false });
+		await invokeEvent(harness, "session_start");
+
+		expect(harness.statusText).toHaveLength(0);
+	});
+
+	it("enables the gate with /om on in rpc mode but still leaves the host UI untouched", async () => {
+		const harness = makeHarness(cwd, { mode: "rpc", hasUI: true });
+		await invokeEvent(harness, "session_start");
+
+		await invokeCommand(harness, "om", "on");
+		expect(harness.appended).toEqual([{ customType: OM_ENABLED, data: { enabled: true } }]);
+		expect(harness.statusText).toHaveLength(0);
+		expect(harness.widgets).toHaveLength(0);
 	});
 
 	it("toggles on with /om on, refuses a redundant on, then toggles off with a bare /om", async () => {
