@@ -36,9 +36,7 @@ export default function observationalMemory(pi: ExtensionAPI): void {
 	const runtime = new Runtime();
 
 	function attachIfEnabled(ctx: ExtensionContext): void {
-		// `mode` is not part of pi's ExtensionContext (was only reachable via `any`); cast aloud at
-		// the one check site. Behaviour preserved untouched.
-		if (runtime.enabled && (ctx as { mode?: string }).mode === "tui" && ctx.hasUI && ctx.ui) {
+		if (runtime.enabled && ctx.mode === "tui" && ctx.hasUI && ctx.ui) {
 			runtime.status.attach(ctx.ui);
 		} else {
 			runtime.status.detach();
