@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "sonar:scan": "node --env-file-if-exists=.env scripts/sonar-scan.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
