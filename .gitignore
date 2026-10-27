@@ -11,6 +11,10 @@ build/
 # Test coverage
 coverage/
 
+# SonarQube scan working directory (sonar-project.properties) — scan cache and
+# report artifacts never enter the tree delta
+.scannerwork/
+
 # Environment
 .env
 .env.local
