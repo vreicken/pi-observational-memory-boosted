@@ -9,4 +9,15 @@ export default defineConfig([
   globalIgnores(["coverage/**", "node_modules/**"]),
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  // The .mjs scripts are plain Node — js.configs.recommended's no-undef needs
+  // the Node globals declared for them (the TS files are covered by tsc).
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+        console: "readonly",
+      },
+    },
+  },
 ]);
