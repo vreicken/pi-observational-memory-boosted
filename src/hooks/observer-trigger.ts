@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentStartEvent, ExtensionAPI, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { assignObservationTimestamps } from "../ids.js";
 import {
 	evictableSpansInSlice,
@@ -203,7 +203,7 @@ async function dispatchObserver(
 }
 
 export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): void {
-	const handler = (_event: unknown, ctx: TriggerCtx) => evaluateObserverTriggers(pi, runtime, ctx);
-	pi.on("turn_end", handler as never);
-	pi.on("agent_start", handler as never);
+	const handler = (_event: TurnEndEvent | AgentStartEvent, ctx: TriggerCtx): void => evaluateObserverTriggers(pi, runtime, ctx);
+	pi.on("turn_end", handler);
+	pi.on("agent_start", handler);
 }

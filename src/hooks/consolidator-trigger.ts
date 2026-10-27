@@ -15,7 +15,7 @@
  * buffer always drains; a flaked-out partial run is recoverable from the worker's global session
  * recording (the standing safety net for lossy rewrites) and is the critic tier's job to catch.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentStartEvent, ExtensionAPI, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import {
 	OM_OBSERVATIONS_DROPPED,
 	foldLedger,
@@ -158,7 +158,7 @@ async function dispatchConsolidator(
 }
 
 export function registerConsolidatorTrigger(pi: ExtensionAPI, runtime: Runtime): void {
-	const handler = (_event: unknown, ctx: TriggerCtx) => evaluateConsolidatorTrigger(pi, runtime, ctx);
-	pi.on("turn_end", handler as never);
-	pi.on("agent_start", handler as never);
+	const handler = (_event: TurnEndEvent | AgentStartEvent, ctx: TriggerCtx): void => evaluateConsolidatorTrigger(pi, runtime, ctx);
+	pi.on("turn_end", handler);
+	pi.on("agent_start", handler);
 }

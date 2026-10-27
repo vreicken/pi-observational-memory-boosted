@@ -96,6 +96,6 @@ export function registerEvictionFlush(pi: ExtensionAPI, runtime: Runtime): void 
 		}
 		return { entries: flushed.entries };
 	};
-	pi.on("turn_end", handler as never);
-	pi.on("agent_before_settle", handler as never);
+	pi.on("turn_end", handler);
+	pi.on("agent_before_settle", handler);
 }
