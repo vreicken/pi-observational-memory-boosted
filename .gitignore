@@ -33,6 +33,9 @@ coverage/
 *.log
 npm-debug.log*
 
+# Audit run artifacts (hygiene scans, verdicts, reports)
+.local/
+
 .memory/
 
 # Nocka pipeline scratch (SDLC writes temp/qa/ here each pass) — never tracked or gated

@@ -1,8 +1,11 @@
 /**
  * Manual SonarQube scan trigger. Reads SONAR_SCANNER_TOKEN from this repo's
  * .env (never through a shell command line) and hands it to the scanner as
- * SONAR_TOKEN. Application convention mirrors <sibling-project>'s post-commit hook;
- * scanning can also run without this, directly via the git hook.
+ * SONAR_TOKEN. Scanning can also run without this, directly via the git hook.
+ *
+ * Scanner binary is looked up as:
+ *   1. $SONAR_SCANNER_BIN, or
+ *   2. `sonar-scanner` resolved from PATH.
  */
 import { spawnSync } from "node:child_process";
 
@@ -12,8 +15,7 @@ if (!token) {
 	process.exit(1);
 }
 
-const scanner =
-	"<scanner-binary>";
+const scanner = process.env.SONAR_SCANNER_BIN ?? "sonar-scanner";
 
 const result = spawnSync(scanner, [], {
 	stdio: "inherit",

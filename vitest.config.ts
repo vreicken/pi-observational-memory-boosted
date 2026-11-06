@@ -1,6 +1,6 @@
 import { defineConfig } from "vitest/config";
 
-// Nocka setup: aligned with the bc-core convention. Test include is anchored
+// Test include is anchored
 // at the component root (`**/*.test.ts`) instead of a hand-listed directory,
 // so a test file added outside tests/ is still picked up. Coverage include
 // covers every .ts this component owns (src/, agent/, tests/), so a source

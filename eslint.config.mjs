@@ -1,5 +1,4 @@
-// Nocka setup: same plain-Node flat-config baseline as bc-core
-// (<baseline-config>). No framework plugin —
+// Plain-Node flat config. No framework plugin —
 // this is a pi extension process, not a web app.
 import { defineConfig, globalIgnores } from "eslint/config";
 import js from "@eslint/js";
