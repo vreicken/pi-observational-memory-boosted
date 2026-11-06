@@ -201,6 +201,11 @@ npm test          # vitest
 npm run typecheck # tsc --noEmit
 ```
 
+Optional SonarQube scanning: create your own `sonar-project.properties` (not
+committed — this repo ships none) and set `SONAR_SCANNER_TOKEN` in `.env`,
+then `npm run sonar:scan`. Set `SONAR_SCANNER_BIN` if the scanner is not on
+`PATH`.
+
 Layout: `src/` is the master-side orchestrator (entry `src/index.ts`); `agent/` is the shared
 worker extension loaded into subprocesses via `-e` (`OM_WORKER=observer|consolidator`).
 Long-term memory lives under `<project>/.memory/<sessionId>/` (`INDEX.md` + `<topic>.md` +
